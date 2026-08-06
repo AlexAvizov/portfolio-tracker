@@ -274,6 +274,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 if __name__ == "__main__":
     os.chdir(DIR)
     init_db()
+    http.server.ThreadingHTTPServer.allow_reuse_address = True
     server = http.server.ThreadingHTTPServer(("", PORT), Handler)
     print(f"\n  Stock Portfolio Tracker")
     print(f"  ──────────────────────────────────────────────")
