@@ -487,32 +487,31 @@ const priceData    = (ccy) => prices[ccy] ?? null;
 
 // Section definitions
 const SECTIONS = [
-  { id: 'EUR', label: 'Invested in Euro',        flag: '🇪🇺', symbol: '€',  avSymbol: 'SAP.DEX' },
-  { id: 'USD', label: 'Invested in US Dollar',   flag: '🇺🇸', symbol: '$',  avSymbol: 'SAP'     },
-  { id: 'ILS', label: 'Invested in Israeli Shekel', flag: '🇮🇱', symbol: '₪', avSymbol: null      },
+  { id: 'EUR', label: 'Invested in Euro',           flag: '🇪🇺', symbol: '€',  yfSymbol: 'SAP.DE' },
+  { id: 'USD', label: 'Invested in US Dollar',      flag: '🇺🇸', symbol: '$',  yfSymbol: 'SAP'    },
+  { id: 'ILS', label: 'Invested in Israeli Shekel', flag: '🇮🇱', symbol: '₪',  yfSymbol: null     },
 ];
 
 // ─── Price fetching ────────────────────────────────────────────────────────────
-const AV_KEY = 'RIBSWKDXHM0MTYGB';
 
-async function fetchAVQuote(avSymbol, currency) {
+async function fetchYahooQuote(yfSymbol, currency) {
   try {
-    const url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${avSymbol}&apikey=${AV_KEY}`;
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${yfSymbol}?interval=1d&range=1d`;
     const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
     if (!r.ok) return null;
     const d = await r.json();
-    const q = d['Global Quote'];
-    const price = parseFloat(q?.['05. price']);
-    const prev  = parseFloat(q?.['08. previous close']);
+    const meta  = d?.chart?.result?.[0]?.meta;
+    const price = parseFloat(meta?.regularMarketPrice);
+    const prev  = parseFloat(meta?.chartPreviousClose);
     if (!price || isNaN(price)) return null;
     const chg    = prev ? price - prev : null;
     const chgPct = prev ? ((price - prev) / prev) * 100 : null;
-    return { price, prev, chg, chgPct, currency, symbol: avSymbol, source: 'Alpha Vantage' };
+    return { price, prev, chg, chgPct, currency, symbol: yfSymbol, source: 'Yahoo Finance' };
   } catch(e) { return null; }
 }
 
 async function fetchAllPrices() {
-  // Try server first (returns both EUR+USD in one call), fall back to direct AV
+  // Try server first (returns both EUR+USD in one call), fall back to direct Yahoo Finance
   try {
     const r = await fetch('http://localhost:8765/api/price', { signal: AbortSignal.timeout(4000) });
     if (r.ok) {
@@ -523,10 +522,10 @@ async function fetchAllPrices() {
     }
   } catch(e) { /* server not running */ }
 
-  // Direct Alpha Vantage fallback
+  // Direct Yahoo Finance fallback
   const [eur, usd] = await Promise.all([
-    fetchAVQuote('SAP.DEX', 'EUR'),
-    fetchAVQuote('SAP',     'USD'),
+    fetchYahooQuote('SAP.DE', 'EUR'),
+    fetchYahooQuote('SAP',    'USD'),
   ]);
   if (eur) prices['EUR'] = eur;
   if (usd) prices['USD'] = usd;

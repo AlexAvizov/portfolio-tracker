@@ -4,7 +4,7 @@ Stock Portfolio Tracker — local server
   • Serves index.html (the app)
   • SQLite database for transaction persistence
   • REST API for CRUD operations
-  • Proxies live SAP stock price from Alpha Vantage
+  • Proxies live SAP stock price from Yahoo Finance
 
 Run:  python3 stock-server.py
 Open: http://localhost:8765
@@ -101,35 +101,42 @@ def db_clear():
             conn.commit()
 
 # ─── Price fetching ────────────────────────────────────────────────────────────
-AV_KEY        = "RIBSWKDXHM0MTYGB"
 _price_cache  = {}
 _price_lock   = threading.Lock()
 CACHE_TTL     = 60
 
-def fetch_av_quote(av_symbol, currency):
+YAHOO_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+    "Accept": "application/json",
+}
+
+def fetch_yahoo_quote(yf_symbol, currency):
     with _price_lock:
-        cached = _price_cache.get(av_symbol)
+        cached = _price_cache.get(yf_symbol)
         if cached and time.time() - cached["ts"] < CACHE_TTL:
             return cached["data"]
 
     try:
-        url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={av_symbol}&apikey={AV_KEY}"
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{yf_symbol}?interval=1d&range=1d"
+        req = urllib.request.Request(url, headers=YAHOO_HEADERS)
         with urllib.request.urlopen(req, timeout=8) as resp:
-            data = json.loads(resp.read())
-        q     = data.get("Global Quote", {})
-        price = float(q.get("05. price", 0) or 0)
-        prev  = float(q.get("08. previous close", 0) or 0)
+            raw = resp.read()
+            if resp.info().get("Content-Encoding") == "gzip":
+                raw = gzip.decompress(raw)
+            data = json.loads(raw)
+        meta  = data["chart"]["result"][0]["meta"]
+        price = float(meta.get("regularMarketPrice") or 0)
+        prev  = float(meta.get("chartPreviousClose") or 0)
         if price:
             chg     = price - prev if prev else None
             chg_pct = ((price - prev) / prev * 100) if prev else None
             result  = {"price": price, "prev": prev, "chg": chg, "chgPct": chg_pct,
-                       "currency": currency, "symbol": av_symbol, "source": "Alpha Vantage"}
+                       "currency": currency, "symbol": yf_symbol, "source": "Yahoo Finance"}
             with _price_lock:
-                _price_cache[av_symbol] = {"data": result, "ts": time.time()}
+                _price_cache[yf_symbol] = {"data": result, "ts": time.time()}
             return result
     except Exception as e:
-        print(f"  [price] {av_symbol} failed: {e}")
+        print(f"  [price] {yf_symbol} failed: {e}")
     return None
 
 # ─── HTTP Handler ─────────────────────────────────────────────────────────────
@@ -172,8 +179,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         # /api/price — live price (EUR + USD)
         if path == "/api/price":
-            eur = fetch_av_quote("SAP.DEX", "EUR")
-            usd = fetch_av_quote("SAP",     "USD")
+            eur = fetch_yahoo_quote("SAP.DE", "EUR")
+            usd = fetch_yahoo_quote("SAP",    "USD")
             self.json_response({"EUR": eur, "USD": usd})
             return
 
