@@ -511,14 +511,24 @@ async function fetchAVQuote(avSymbol, currency) {
 }
 
 async function fetchAllPrices() {
-  // Fetch EUR (Xetra) and USD (NYSE) in parallel; ILS has no listed SAP quote
+  // Try server first (returns both EUR+USD in one call), fall back to direct AV
+  try {
+    const r = await fetch('http://localhost:8765/api/price', { signal: AbortSignal.timeout(4000) });
+    if (r.ok) {
+      const d = await r.json();
+      if (d.EUR) prices['EUR'] = d.EUR;
+      if (d.USD) prices['USD'] = d.USD;
+      return;
+    }
+  } catch(e) { /* server not running */ }
+
+  // Direct Alpha Vantage fallback
   const [eur, usd] = await Promise.all([
     fetchAVQuote('SAP.DEX', 'EUR'),
     fetchAVQuote('SAP',     'USD'),
   ]);
   if (eur) prices['EUR'] = eur;
   if (usd) prices['USD'] = usd;
-  // ILS: no live price source — user must provide purchase prices in ILS manually
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -822,11 +832,28 @@ document.getElementById('fileUpload').addEventListener('change', async (e) => {
       newRows.push([sym, String(row[nameI] || '').trim(), qty, price, date, ccy]);
     }
     if (!newRows.length) { showToast('⚠️ No valid rows found in file'); return; }
+
+    // Import via API if server running, else localStorage
+    try {
+      const r = await fetch('http://localhost:8765/api/transactions/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rows: newRows }),
+        signal: AbortSignal.timeout(5000),
+      });
+      if (r.ok) {
+        await loadData();
+        showToast(`✅ Loaded ${newRows.length} transactions from "${sheetName}" → saved to database`);
+        closeDetail(); renderAll();
+        return;
+      }
+    } catch(e) { /* server not running */ }
+
+    // Fallback: localStorage
     rawRows = newRows;
     localStorage.setItem('stockPortfolioData', JSON.stringify(rawRows));
-    closeDetail();
-    renderAll();
-    showToast(`✅ Loaded ${newRows.length} transactions from "${sheetName}"`);
+    closeDetail(); renderAll();
+    showToast(`✅ Loaded ${newRows.length} transactions from "${sheetName}" (offline)`);
   } catch(err) {
     console.error(err);
     showToast('❌ Error reading file: ' + err.message);
@@ -834,36 +861,68 @@ document.getElementById('fileUpload').addEventListener('change', async (e) => {
   e.target.value = '';
 });
 
-// ─── Load persisted data ──────────────────────────────────────────────────────
-function loadSavedData() {
+// ─── Data layer: API-first, localStorage fallback ─────────────────────────────
+let useAPI = false;  // set to true once server responds
+
+async function loadData() {
+  try {
+    const r = await fetch('http://localhost:8765/api/transactions', { signal: AbortSignal.timeout(3000) });
+    if (r.ok) {
+      useAPI = true;
+      const rows = await r.json();
+      if (rows.length) {
+        // Convert DB rows → [symbol, name, qty, price, date, ccy]
+        rawRows = rows.map(r => [r.symbol, r.name, r.quantity, r.purchase_price, r.purchase_date, r.currency]);
+        rawRows._ids = rows.map(r => r.id);  // store DB ids for updates/deletes
+        return;
+      }
+      // Server running but DB empty → seed with defaults and save
+      if (DEFAULT_ROWS.length) {
+        await fetch('http://localhost:8765/api/transactions/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ rows: DEFAULT_ROWS.map(r => [...r, 'EUR']) }),
+        });
+        const r2 = await fetch('http://localhost:8765/api/transactions');
+        const seeded = await r2.json();
+        rawRows = seeded.map(r => [r.symbol, r.name, r.quantity, r.purchase_price, r.purchase_date, r.currency]);
+        rawRows._ids = seeded.map(r => r.id);
+      }
+      return;
+    }
+  } catch(e) { /* server offline */ }
+
+  // Fallback: localStorage
+  useAPI = false;
   try {
     const saved = localStorage.getItem('stockPortfolioData');
     if (saved) {
       const parsed = JSON.parse(saved);
-      if (Array.isArray(parsed) && parsed.length) {
-        // Validate: must have at least [symbol, name, qty, price, date]
-        const valid = parsed.filter(r => Array.isArray(r) && r.length >= 4 && !isNaN(+r[2]) && !isNaN(+r[3]));
-        if (valid.length) {
-          rawRows = valid.map(r => [...r.slice(0,5), (r[5] ?? 'EUR').toString().toUpperCase()]);
-          return; // only replace defaults if saved data is genuinely valid
-        }
-      }
+      const valid = parsed.filter(r => Array.isArray(r) && r.length >= 4 && !isNaN(+r[2]) && !isNaN(+r[3]));
+      if (valid.length) { rawRows = valid.map(r => [...r.slice(0,5), (r[5]??'EUR').toString().toUpperCase()]); return; }
     }
   } catch(e) {}
-  // Fall back to DEFAULT_ROWS — either no saved data or it was corrupt
   rawRows = DEFAULT_ROWS.map(r => [...r, 'EUR']);
 }
 
-// ─── CRUD ─────────────────────────────────────────────────────────────────────
-let modalEditIdx = null;   // null = add mode, number = edit mode (index into rawRows)
+function getRowId(idx) {
+  return rawRows._ids ? rawRows._ids[idx] : null;
+}
 
-function persistAndRefresh() {
-  localStorage.setItem('stockPortfolioData', JSON.stringify(rawRows));
+async function persistAndRefresh() {
+  if (useAPI) {
+    // Re-load from DB to stay in sync (adds/edits/deletes already sent to API)
+    await loadData();
+  } else {
+    localStorage.setItem('stockPortfolioData', JSON.stringify(rawRows));
+  }
   renderAll();
   if (activeSymbol && activeCcy) renderDetail(activeSymbol, activeCcy);
 }
 
-// Open modal to add a brand-new holding (no symbol pre-filled)
+// ─── CRUD ─────────────────────────────────────────────────────────────────────
+let modalEditIdx = null;
+
 function openAddHolding(ccy) {
   modalEditIdx = null;
   document.getElementById('modalTitle').textContent = 'Add Purchase';
@@ -878,7 +937,6 @@ function openAddHolding(ccy) {
   document.getElementById('txModal').classList.add('open');
 }
 
-// Open modal to add a transaction to an already-known symbol
 function openAddTransaction(symbol, name, ccy) {
   modalEditIdx = null;
   document.getElementById('modalTitle').textContent = `Add Transaction — ${symbol}`;
@@ -893,7 +951,6 @@ function openAddTransaction(symbol, name, ccy) {
   document.getElementById('txModal').classList.add('open');
 }
 
-// Open modal pre-filled to edit a specific transaction row
 function openEditTransaction(idx) {
   const r = rawRows[idx];
   if (!r) return;
@@ -910,7 +967,6 @@ function openEditTransaction(idx) {
   document.getElementById('txModal').classList.add('open');
 }
 
-// Open modal to edit all transactions of a symbol at once (edit first tx as representative)
 function openEditHolding(symbol, ccy) {
   const idx = rawRows.findIndex(r => r[0].replace(/\s/g,'') === symbol && (r[5]??'EUR').toUpperCase() === ccy);
   if (idx >= 0) openEditTransaction(idx);
@@ -921,7 +977,7 @@ function closeModal() {
   modalEditIdx = null;
 }
 
-function saveTransaction() {
+async function saveTransaction() {
   const symbol = document.getElementById('fSymbol').value.trim();
   const name   = document.getElementById('fName').value.trim();
   const date   = document.getElementById('fDate').value.trim();
@@ -929,53 +985,74 @@ function saveTransaction() {
   const qty    = parseFloat(document.getElementById('fQty').value);
   const price  = parseFloat(document.getElementById('fPrice').value);
 
-  if (!symbol)         return showToast('⚠️ Symbol is required');
-  if (!name)           return showToast('⚠️ Name is required');
-  if (!date)           return showToast('⚠️ Date is required');
-  if (isNaN(qty)  || qty   <= 0) return showToast('⚠️ Enter a valid quantity');
-  if (isNaN(price)|| price <= 0) return showToast('⚠️ Enter a valid price');
+  if (!symbol)                   return showToast('⚠️ Symbol is required');
+  if (!name)                     return showToast('⚠️ Name is required');
+  if (!date)                     return showToast('⚠️ Date is required');
+  if (isNaN(qty)   || qty   <= 0) return showToast('⚠️ Enter a valid quantity');
+  if (isNaN(price) || price <= 0) return showToast('⚠️ Enter a valid price');
 
-  const row = [symbol, name, qty, price, date, ccy];
+  const payload = { symbol, name, quantity: qty, purchase_price: price, purchase_date: date, currency: ccy };
 
-  if (modalEditIdx !== null) {
-    rawRows[modalEditIdx] = row;
-    showToast('✅ Transaction updated');
+  if (useAPI) {
+    if (modalEditIdx !== null) {
+      const id = getRowId(modalEditIdx);
+      await fetch(`http://localhost:8765/api/transactions/${id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+      });
+      showToast('✅ Transaction updated');
+    } else {
+      await fetch('http://localhost:8765/api/transactions', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+      });
+      showToast('✅ Transaction added');
+      activeSymbol = symbol; activeCcy = ccy;
+    }
   } else {
-    rawRows.push(row);
-    showToast('✅ Transaction added');
-    // Auto-expand the symbol in its section
-    activeSymbol = symbol; activeCcy = ccy;
+    const row = [symbol, name, qty, price, date, ccy];
+    if (modalEditIdx !== null) { rawRows[modalEditIdx] = row; showToast('✅ Transaction updated'); }
+    else { rawRows.push(row); showToast('✅ Transaction added'); activeSymbol = symbol; activeCcy = ccy; }
   }
 
   closeModal();
-  persistAndRefresh();
+  await persistAndRefresh();
 }
 
-// ── Delete holding (all transactions for a symbol) ─────────────────────────
 function confirmDeleteHolding(symbol, ccy) {
   const count = rawRows.filter(r => r[0].replace(/\s/g,'') === symbol && (r[5]??'EUR').toUpperCase() === ccy).length;
   document.getElementById('confirmMsg').textContent =
     `Delete all ${count} transaction${count !== 1 ? 's' : ''} for ${symbol} (${ccy})? This cannot be undone.`;
-  document.getElementById('confirmOkBtn').onclick = () => {
-    rawRows = rawRows.filter(r => !(r[0].replace(/\s/g,'') === symbol && (r[5]??'EUR').toUpperCase() === ccy));
+  document.getElementById('confirmOkBtn').onclick = async () => {
+    if (useAPI) {
+      const ids = rawRows.reduce((acc, r, i) => {
+        if (r[0].replace(/\s/g,'') === symbol && (r[5]??'EUR').toUpperCase() === ccy) acc.push(getRowId(i));
+        return acc;
+      }, []);
+      await Promise.all(ids.map(id => fetch(`http://localhost:8765/api/transactions/${id}`, { method: 'DELETE' })));
+    } else {
+      rawRows = rawRows.filter(r => !(r[0].replace(/\s/g,'') === symbol && (r[5]??'EUR').toUpperCase() === ccy));
+    }
     if (activeSymbol === symbol && activeCcy === ccy) { activeSymbol = null; activeCcy = null; }
     closeConfirm();
-    persistAndRefresh();
+    await persistAndRefresh();
     showToast(`🗑️ Deleted all transactions for ${symbol}`);
   };
   document.getElementById('confirmModal').classList.add('open');
 }
 
-// ── Delete single transaction ──────────────────────────────────────────────
 function confirmDeleteTransaction(idx) {
   const r = rawRows[idx];
   if (!r) return;
   document.getElementById('confirmMsg').textContent =
-    `Delete transaction: ${r[2]} shares of ${r[0].replace(/\s/g,'')} at ${ccySym[r[5]??'EUR']}${r[3]} on ${fmtDate(r[4])}?`;
-  document.getElementById('confirmOkBtn').onclick = () => {
-    rawRows.splice(idx, 1);
+    `Delete: ${r[2]} shares of ${r[0].replace(/\s/g,'')} at ${ccySym[r[5]??'EUR']}${r[3]} on ${fmtDate(r[4])}?`;
+  document.getElementById('confirmOkBtn').onclick = async () => {
+    if (useAPI) {
+      const id = getRowId(idx);
+      await fetch(`http://localhost:8765/api/transactions/${id}`, { method: 'DELETE' });
+    } else {
+      rawRows.splice(idx, 1);
+    }
     closeConfirm();
-    persistAndRefresh();
+    await persistAndRefresh();
     showToast('🗑️ Transaction deleted');
   };
   document.getElementById('confirmModal').classList.add('open');
@@ -985,18 +1062,16 @@ function closeConfirm() {
   document.getElementById('confirmModal').classList.remove('open');
 }
 
-// Close modals on overlay click
 document.getElementById('txModal').addEventListener('click', e => { if (e.target === e.currentTarget) closeModal(); });
 document.getElementById('confirmModal').addEventListener('click', e => { if (e.target === e.currentTarget) closeConfirm(); });
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 async function init() {
-  loadSavedData();
+  await loadData();
   renderAll();
 
   await fetchAllPrices();
 
-  // Update hidden badge elements (kept for JS compatibility)
   const eur = priceData('EUR');
   if (eur) {
     document.getElementById('sapPrice').textContent = `EUR ${fmt(eur.price)}`;
@@ -1008,9 +1083,11 @@ async function init() {
   }
 
   const fetched = Object.keys(prices).join(', ') || 'none';
-  document.getElementById('priceStatus').textContent = `Live prices: ${fetched} · ${new Date().toLocaleTimeString()}`;
+  const src = useAPI ? ' · DB' : ' · offline';
+  document.getElementById('priceStatus').textContent =
+    `Live: ${fetched}${src} · ${new Date().toLocaleTimeString()}`;
   if (!Object.keys(prices).length) {
-    document.getElementById('priceStatus').innerHTML = '<span style="color:var(--yellow)">Price fetch failed — showing cost basis only</span>';
+    document.getElementById('priceStatus').innerHTML = '<span style="color:var(--yellow)">Price fetch failed</span>';
   }
 
   renderAll();
