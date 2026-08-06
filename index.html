@@ -283,9 +283,10 @@
 <header>
   <div class="header-left">
     <div class="logo">📈 Portfolio Tracker</div>
-    <div id="sapPriceBadge" style="display:none">
-      <span id="sapPrice"></span>
-      <span id="sapChg"></span>
+    <div id="sapPriceBadge" class="price-badge" style="display:none">
+      <span class="ticker">SAP</span>
+      <span class="price-val" id="sapPrice"></span>
+      <span class="chg" id="sapChg"></span>
     </div>
   </div>
   <div class="header-right">
@@ -1080,6 +1081,7 @@ async function init() {
       const cls  = eur.chg >= 0 ? 'up' : 'dn';
       document.getElementById('sapChg').innerHTML = `<span class="${cls}">${sign}${fmt(eur.chg)} (${sign}${fmt(eur.chgPct)}%)</span>`;
     }
+    document.getElementById('sapPriceBadge').style.display = '';
   }
 
   const fetched = Object.keys(prices).join(', ') || 'none';
