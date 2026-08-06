@@ -1,0 +1,1022 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stock Portfolio Tracker</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #22263a;
+    --border: #2e3350;
+    --accent: #4f8ef7;
+    --accent2: #7c3aed;
+    --green: #22c55e;
+    --red: #ef4444;
+    --yellow: #f59e0b;
+    --text: #e2e8f0;
+    --text-muted: #8892a4;
+    --radius: 10px;
+    --shadow: 0 4px 24px rgba(0,0,0,0.4);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 14px;
+    min-height: 100vh;
+  }
+  header {
+    background: linear-gradient(135deg, var(--surface) 0%, var(--surface2) 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 18px 28px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .header-left { display: flex; align-items: center; gap: 14px; }
+  .logo { font-size: 22px; font-weight: 700; background: linear-gradient(90deg, var(--accent), var(--accent2)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  .price-badge {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 14px;
+    display: flex; align-items: center; gap: 8px;
+    font-size: 13px;
+  }
+  .price-badge .ticker { color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .price-badge .price-val { font-weight: 700; font-size: 17px; color: var(--accent); }
+  .price-badge .chg { font-size: 12px; }
+  .up { color: var(--green); }
+  .dn { color: var(--red); }
+  .header-right { display: flex; align-items: center; gap: 10px; }
+  .price-status { font-size: 11px; color: var(--text-muted); }
+  .btn-upload {
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    color: #fff;
+    border: none;
+    border-radius: 7px;
+    padding: 8px 18px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    display: flex; align-items: center; gap: 6px;
+    transition: opacity 0.15s;
+  }
+  .btn-upload:hover { opacity: 0.85; }
+  input[type=file] { display: none; }
+
+  main { padding: 24px 28px; }
+
+  .summary-bar {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 18px;
+  }
+  .stat-card .label { color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; }
+  .stat-card .value { font-size: 20px; font-weight: 700; }
+
+  .section-title {
+    font-size: 15px; font-weight: 600; margin-bottom: 12px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .section-title .badge {
+    background: var(--accent); color: #fff; font-size: 11px;
+    padding: 2px 7px; border-radius: 20px;
+  }
+
+  .table-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow-x: auto;
+    box-shadow: var(--shadow);
+    margin-bottom: 28px;
+  }
+  table { width: 100%; border-collapse: collapse; }
+  thead tr { background: var(--surface2); }
+  th {
+    padding: 11px 14px;
+    text-align: left;
+    color: var(--text-muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 600;
+    white-space: nowrap;
+    user-select: none;
+    cursor: pointer;
+  }
+  th:hover { color: var(--text); }
+  th .sort-arrow { margin-left: 4px; opacity: 0.4; }
+  th.sorted .sort-arrow { opacity: 1; color: var(--accent); }
+  td {
+    padding: 11px 14px;
+    border-top: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  tbody tr { transition: background 0.1s; }
+  tbody tr:hover { background: var(--surface2); cursor: pointer; }
+  tbody tr.active-row { background: rgba(79,142,247,0.1); border-left: 3px solid var(--accent); }
+
+  .symbol-cell { font-weight: 700; font-size: 13px; color: var(--accent); }
+  .name-cell { color: var(--text-muted); }
+  .num { text-align: right; }
+  .pill {
+    display: inline-block;
+    padding: 2px 9px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .pill-up { background: rgba(34,197,94,0.15); color: var(--green); }
+  .pill-dn { background: rgba(239,68,68,0.15); color: var(--red); }
+  .pill-zero { background: rgba(148,163,184,0.15); color: var(--text-muted); }
+
+  .detail-panel {
+    display: none;
+    margin-top: 4px;
+  }
+  .detail-panel.visible { display: block; }
+  .detail-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 12px;
+  }
+  .detail-title { font-size: 15px; font-weight: 600; }
+  .detail-subtitle { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
+  .btn-close {
+    background: var(--surface2); border: 1px solid var(--border);
+    color: var(--text); border-radius: 6px; padding: 5px 12px;
+    cursor: pointer; font-size: 12px;
+  }
+  .btn-close:hover { background: var(--border); }
+
+  .loading {
+    display: flex; align-items: center; gap: 8px;
+    color: var(--text-muted); font-size: 12px; padding: 8px 0;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner {
+    width: 14px; height: 14px; border: 2px solid var(--border);
+    border-top-color: var(--accent); border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+  }
+  .inline-price-badge {
+    display: inline-flex; flex-direction: column; align-items: flex-end;
+    gap: 2px; line-height: 1.2;
+  }
+  .inline-price-badge .ipt { color: var(--text-muted); font-size: 10px; letter-spacing: 0.04em; }
+  .inline-price-badge .ipv { font-weight: 700; font-size: 14px; color: var(--accent); }
+  .inline-price-badge .ipc { font-size: 11px; font-weight: 600; }
+
+  .toast {
+    position: fixed; bottom: 24px; right: 24px;
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 12px 18px;
+    box-shadow: var(--shadow); font-size: 13px;
+    transition: opacity 0.3s; z-index: 999;
+  }
+  .toast.hidden { opacity: 0; pointer-events: none; }
+
+  .empty-state {
+    text-align: center; padding: 48px 24px; color: var(--text-muted);
+  }
+  .empty-state svg { margin-bottom: 12px; opacity: 0.3; }
+
+  .currency-section {
+    margin-bottom: 40px;
+  }
+  .currency-section-header {
+    display: flex; align-items: center; gap: 12px;
+    margin-bottom: 16px;
+    padding-bottom: 10px;
+    border-bottom: 2px solid var(--border);
+  }
+  .currency-flag { font-size: 22px; }
+  .currency-name { font-size: 18px; font-weight: 700; }
+  .currency-symbol {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 6px; padding: 3px 10px;
+    font-size: 12px; font-weight: 600; color: var(--text-muted);
+  }
+
+  .detail-panel {
+    display: none;
+    margin-top: 4px;
+    padding: 0 28px 28px;
+  }
+  .detail-panel.visible { display: block; }
+
+  /* ── CRUD buttons ── */
+  .toolbar {
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 12px; flex-wrap: wrap;
+  }
+  .btn {
+    border: none; border-radius: 7px; padding: 7px 14px;
+    cursor: pointer; font-size: 12px; font-weight: 600;
+    display: inline-flex; align-items: center; gap: 5px;
+    transition: opacity 0.15s;
+  }
+  .btn:hover { opacity: 0.82; }
+  .btn-add  { background: var(--green);  color: #fff; }
+  .btn-edit { background: var(--accent); color: #fff; }
+  .btn-del  { background: var(--red);    color: #fff; }
+  .btn-sm   { padding: 4px 10px; font-size: 11px; }
+
+  /* ── Modal overlay ── */
+  .modal-overlay {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,0.65); z-index: 1000;
+    align-items: center; justify-content: center;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 14px; padding: 28px 32px; width: 100%; max-width: 480px;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.6);
+  }
+  .modal h3 { font-size: 16px; font-weight: 700; margin-bottom: 20px; }
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .form-grid .full { grid-column: 1 / -1; }
+  .form-group { display: flex; flex-direction: column; gap: 5px; }
+  .form-group label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  .form-group input, .form-group select {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 7px; padding: 8px 12px; color: var(--text);
+    font-size: 13px; outline: none;
+  }
+  .form-group input:focus, .form-group select:focus { border-color: var(--accent); }
+  .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 22px; }
+  .btn-cancel { background: var(--surface2); border: 1px solid var(--border); color: var(--text); border-radius: 7px; padding: 8px 18px; cursor: pointer; font-size: 13px; }
+  .btn-save   { background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #fff; border: none; border-radius: 7px; padding: 8px 20px; cursor: pointer; font-size: 13px; font-weight: 600; }
+
+  /* ── Confirm dialog ── */
+  .confirm-box {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 24px 28px; width: 100%; max-width: 360px;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.6); text-align: center;
+  }
+  .confirm-box p { margin-bottom: 18px; line-height: 1.5; }
+  .confirm-actions { display: flex; gap: 10px; justify-content: center; }
+
+  @media (max-width: 640px) {
+    header, main { padding: 14px 16px; }
+    .summary-bar { grid-template-columns: 1fr 1fr; }
+    .form-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-left">
+    <div class="logo">📈 Portfolio Tracker</div>
+    <div id="sapPriceBadge" style="display:none">
+      <span id="sapPrice"></span>
+      <span id="sapChg"></span>
+    </div>
+  </div>
+  <div class="header-right">
+    <span class="price-status" id="priceStatus">Fetching live price…</span>
+    <label class="btn-upload" for="fileUpload">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      Upload Excel
+    </label>
+    <input type="file" id="fileUpload" accept=".xlsx,.xls">
+  </div>
+</header>
+
+<main id="sectionsRoot">
+  <!-- Currency sections rendered dynamically by JS -->
+</main>
+
+<!-- Detail panel (shared, appended to active section by JS) -->
+<div class="detail-panel" id="detailPanel">
+    <div class="detail-header">
+      <div>
+        <div class="detail-title" id="detailTitle"></div>
+        <div class="detail-subtitle" id="detailSubtitle"></div>
+      </div>
+      <button class="btn-close" onclick="closeDetail()">✕ Close</button>
+    </div>
+    <div class="toolbar">
+      <button class="btn btn-add" id="detailAddBtn">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Add Transaction
+      </button>
+    </div>
+    <div class="table-wrap">
+      <table id="detailTable">
+        <thead>
+          <tr>
+            <th>Symbol</th>
+            <th>Name</th>
+            <th>Purchase Date</th>
+            <th class="num">Quantity</th>
+            <th class="num">Purchase Price</th>
+            <th class="num">Current Price</th>
+            <th class="num">Diff</th>
+            <th class="num">Diff %</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="detailBody"></tbody>
+      </table>
+    </div>
+</div>
+
+<div class="toast hidden" id="toast"></div>
+
+<!-- ── Add / Edit transaction modal ── -->
+<div class="modal-overlay" id="txModal">
+  <div class="modal">
+    <h3 id="modalTitle">Add Transaction</h3>
+    <div class="form-grid">
+      <div class="form-group full">
+        <label>Stock Symbol</label>
+        <input id="fSymbol" placeholder="e.g. 50724" autocomplete="off">
+      </div>
+      <div class="form-group full">
+        <label>Stock Name</label>
+        <input id="fName" placeholder="e.g. SAP AG-SPONSORE" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label>Purchase Date</label>
+        <input id="fDate" type="date">
+      </div>
+      <div class="form-group">
+        <label>Currency</label>
+        <select id="fCcy">
+          <option value="EUR">EUR €</option>
+          <option value="USD">USD $</option>
+          <option value="ILS">ILS ₪</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Quantity</label>
+        <input id="fQty" type="number" step="0.0001" placeholder="e.g. 5.25">
+      </div>
+      <div class="form-group">
+        <label>Purchase Price</label>
+        <input id="fPrice" type="number" step="0.01" placeholder="e.g. 172.50">
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="closeModal()">Cancel</button>
+      <button class="btn-save"   onclick="saveTransaction()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Confirm delete dialog ── -->
+<div class="modal-overlay" id="confirmModal">
+  <div class="confirm-box">
+    <p id="confirmMsg">Are you sure?</p>
+    <div class="confirm-actions">
+      <button class="btn-cancel" onclick="closeConfirm()">Cancel</button>
+      <button class="btn btn-del" id="confirmOkBtn">Delete</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script>
+// ─── Default data from clean-table sheet ─────────────────────────────────────
+const DEFAULT_ROWS = [
+  ["50724","SAP AG-SPONSORE",0.11,137.18,"2024-01-08"],
+  ["50724","SAP AG-SPONSORE",0.89,166.44,"2024-02-06"],
+  ["50724","SAP AG-SPONSORE",1.74,166.18,"2024-02-06"],
+  ["50724","SAP AG-SPONSORE",6.26,166.43,"2024-02-06"],
+  ["50724","SAP AG-SPONSORE",2.55,174.56,"2024-03-06"],
+  ["50724","SAP AG-SPONSORE",6.08,174.43,"2024-03-06"],
+  ["50724","SAP AG-SPONSORE",7.43,176.99,"2024-03-11"],
+  ["50724","SAP AG-SPONSORE",8.18,176.68,"2024-03-11"],
+  ["50724","SAP AG-SPONSORE",5.83,177.06,"2024-04-05"],
+  ["50724","SAP AG-SPONSORE",2.45,176.84,"2024-04-05"],
+  ["50724","SAP AG-SPONSORE",2.53,176.31,"2024-05-08"],
+  ["50724","SAP AG-SPONSORE",6.05,176.00,"2024-05-08"],
+  ["50724","SAP AG-SPONSORE",0.31,180.22,"2024-05-21"],
+  ["50724","SAP AG-SPONSORE",0.14,180.50,"2024-05-21"],
+  ["50724","SAP AG-SPONSORE",2.48,179.11,"2024-06-06"],
+  ["50724","SAP AG-SPONSORE",5.93,178.80,"2024-06-06"],
+  ["50724","SAP AG-SPONSORE",7.43,176.87,"2024-06-12"],
+  ["50724","SAP AG-SPONSORE",8.17,176.78,"2024-06-12"],
+  ["50724","SAP AG-SPONSORE",2.35,189.68,"2024-07-05"],
+  ["50724","SAP AG-SPONSORE",5.60,190.01,"2024-07-05"],
+  ["50724","SAP AG-SPONSORE",5.69,184.15,"2024-08-06"],
+  ["50724","SAP AG-SPONSORE",2.38,184.44,"2024-08-06"],
+  ["50724","SAP AG-SPONSORE",5.48,193.95,"2024-09-05"],
+  ["50724","SAP AG-SPONSORE",2.29,194.44,"2024-09-05"],
+  ["50724","SAP AG-SPONSORE",7.43,192.64,"2024-09-11"],
+  ["50724","SAP AG-SPONSORE",8.17,192.55,"2024-09-11"],
+  ["50724","SAP AG-SPONSORE",11.19,192.36,"2024-09-11"],
+  ["50724","SAP AG-SPONSORE",5.09,202.54,"2024-10-08"],
+  ["50724","SAP AG-SPONSORE",2.13,202.76,"2024-10-08"],
+  ["50724","SAP AG-SPONSORE",4.86,217.63,"2024-11-07"],
+  ["50724","SAP AG-SPONSORE",4.95,217.72,"2024-11-07"],
+  ["50724","SAP AG-SPONSORE",4.62,241.04,"2024-12-05"],
+  ["50724","SAP AG-SPONSORE",4.71,240.91,"2024-12-05"],
+  ["50724","SAP AG-SPONSORE",5.59,240.05,"2024-12-11"],
+  ["50724","SAP AG-SPONSORE",7.43,240.18,"2024-12-11"],
+  ["50724","SAP AG-SPONSORE",8.18,239.77,"2024-12-11"],
+  ["50724","SAP AG-SPONSORE",4.58,246.52,"2025-01-08"],
+  ["50724","SAP AG-SPONSORE",2.24,246.04,"2025-01-08"],
+  ["50724","SAP AG-SPONSORE",1.77,271.59,"2025-02-06"],
+  ["50724","SAP AG-SPONSORE",4.23,271.84,"2025-02-06"],
+  ["50724","SAP AG-SPONSORE",4.39,260.13,"2025-03-06"],
+  ["50724","SAP AG-SPONSORE",1.83,260.87,"2025-03-06"],
+  ["50724","SAP AG-SPONSORE",7.26,242.23,"2025-03-12"],
+  ["50724","SAP AG-SPONSORE",5.46,242.19,"2025-03-12"],
+  ["50724","SAP AG-SPONSORE",7.98,242.20,"2025-03-12"],
+  ["50724","SAP AG-SPONSORE",1.87,237.54,"2025-04-04"],
+  ["50724","SAP AG-SPONSORE",4.47,237.71,"2025-04-04"],
+  ["50724","SAP AG-SPONSORE",1.68,263.79,"2025-05-07"],
+  ["50724","SAP AG-SPONSORE",4.03,263.31,"2025-05-07"],
+  ["50724","SAP AG-SPONSORE",0.65,266.24,"2025-05-16"],
+  ["50724","SAP AG-SPONSORE",0.80,266.98,"2025-05-16"],
+  ["50724","SAP AG-SPONSORE",4.04,272.37,"2025-06-05"],
+  ["50724","SAP AG-SPONSORE",1.69,271.93,"2025-06-05"],
+  ["50724","SAP AG-SPONSORE",5.59,265.65,"2025-06-11"],
+  ["50724","SAP AG-SPONSORE",7.43,265.81,"2025-06-11"],
+  ["50724","SAP AG-SPONSORE",1.78,259.94,"2025-07-07"],
+  ["50724","SAP AG-SPONSORE",4.26,260.06,"2025-07-07"],
+  ["50724","SAP AG-SPONSORE",4.55,248.10,"2025-08-06"],
+  ["50724","SAP AG-SPONSORE",1.90,248.13,"2025-08-06"],
+  ["50724","SAP AG-SPONSORE",2.01,233.38,"2025-09-04"],
+  ["50724","SAP AG-SPONSORE",4.81,233.51,"2025-09-04"],
+  ["50724","SAP AG-SPONSORE",5.59,223.71,"2025-09-11"],
+  ["50724","SAP AG-SPONSORE",7.43,223.83,"2025-09-11"],
+  ["50724","SAP AG-SPONSORE",14.16,223.60,"2025-09-11"],
+  ["50724","SAP AG-SPONSORE",4.75,237.48,"2025-10-08"],
+  ["50724","SAP AG-SPONSORE",1.98,237.93,"2025-10-08"],
+  ["50724","SAP AG-SPONSORE",2.16,225.32,"2025-11-06"],
+  ["50724","SAP AG-SPONSORE",5.17,225.40,"2025-11-06"],
+  ["50724","SAP AG-SPONSORE",5.51,210.59,"2025-12-04"],
+  ["50724","SAP AG-SPONSORE",2.30,210.70,"2025-12-04"],
+  ["50724","SAP AG-SPONSORE",7.37,210.93,"2025-12-11"],
+  ["50724","SAP AG-SPONSORE",5.54,211.00,"2025-12-11"],
+  ["50724","SAP AG-SPONSORE",7.02,210.80,"2025-12-11"],
+  ["50724","SAP AG-SPONSORE",5.60,208.50,"2026-01-12"],
+  ["50724","SAP AG-SPONSORE",1.42,209.10,"2026-01-12"],
+];
+
+// ─── App state ────────────────────────────────────────────────────────────────
+// Each raw row: [symbol, name, qty, purchasePrice, date, currency]
+// currency defaults to 'EUR' for existing data
+let rawRows = DEFAULT_ROWS.map(r => [...r, r[5] ?? 'EUR']);
+let prices   = {};   // { EUR: {price, prev, chg, chgPct, currency, symbol, source}, USD: {...}, ILS: {...} }
+let activeSymbol = null;
+let sortCol = null, sortDir = 1;
+
+// Convenience
+const currentPrice = (ccy) => prices[ccy]?.price ?? null;
+const priceData    = (ccy) => prices[ccy] ?? null;
+
+// Section definitions
+const SECTIONS = [
+  { id: 'EUR', label: 'Invested in Euro',        flag: '🇪🇺', symbol: '€',  avSymbol: 'SAP.DEX' },
+  { id: 'USD', label: 'Invested in US Dollar',   flag: '🇺🇸', symbol: '$',  avSymbol: 'SAP'     },
+  { id: 'ILS', label: 'Invested in Israeli Shekel', flag: '🇮🇱', symbol: '₪', avSymbol: null      },
+];
+
+// ─── Price fetching ────────────────────────────────────────────────────────────
+const AV_KEY = 'RIBSWKDXHM0MTYGB';
+
+async function fetchAVQuote(avSymbol, currency) {
+  try {
+    const url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${avSymbol}&apikey=${AV_KEY}`;
+    const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (!r.ok) return null;
+    const d = await r.json();
+    const q = d['Global Quote'];
+    const price = parseFloat(q?.['05. price']);
+    const prev  = parseFloat(q?.['08. previous close']);
+    if (!price || isNaN(price)) return null;
+    const chg    = prev ? price - prev : null;
+    const chgPct = prev ? ((price - prev) / prev) * 100 : null;
+    return { price, prev, chg, chgPct, currency, symbol: avSymbol, source: 'Alpha Vantage' };
+  } catch(e) { return null; }
+}
+
+async function fetchAllPrices() {
+  // Fetch EUR (Xetra) and USD (NYSE) in parallel; ILS has no listed SAP quote
+  const [eur, usd] = await Promise.all([
+    fetchAVQuote('SAP.DEX', 'EUR'),
+    fetchAVQuote('SAP',     'USD'),
+  ]);
+  if (eur) prices['EUR'] = eur;
+  if (usd) prices['USD'] = usd;
+  // ILS: no live price source — user must provide purchase prices in ILS manually
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+const fmt = (n, dec=2) => n == null ? '—' : Number(n).toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+const fmtDate = d => d ? new Date(d).toLocaleDateString('en-GB', {day:'2-digit',month:'short',year:'numeric'}) : '—';
+const ccySym = { EUR: '€', USD: '$', ILS: '₪' };
+
+function pillHtml(val, suffix='%') {
+  if (val == null) return '<span class="pill pill-zero">—</span>';
+  const cls = val > 0 ? 'pill-up' : val < 0 ? 'pill-dn' : 'pill-zero';
+  const sign = val > 0 ? '+' : '';
+  return `<span class="pill ${cls}">${sign}${fmt(val)}${suffix}</span>`;
+}
+
+function renderPriceBadgeInline(ccy) {
+  const p = priceData(ccy);
+  if (!p) return '—';
+  const sym = ccySym[ccy] ?? ccy;
+  let chgHtml = '';
+  if (p.chg != null) {
+    const sign = p.chg >= 0 ? '+' : '';
+    const cls  = p.chg >= 0 ? 'up' : 'dn';
+    chgHtml = `<span class="ipc ${cls}">${sign}${fmt(p.chg)} (${sign}${fmt(p.chgPct)}%)</span>`;
+  }
+  return `<div class="inline-price-badge">
+    <span class="ipt">${p.symbol} · ${p.source}</span>
+    <span class="ipv">${sym} ${fmt(p.price)}</span>
+    ${chgHtml}
+  </div>`;
+}
+
+function showToast(msg, ms=3000) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.remove('hidden');
+  setTimeout(() => t.classList.add('hidden'), ms);
+}
+
+// ─── Aggregate rows by symbol ─────────────────────────────────────────────────
+function buildHoldings(rows, ccy) {
+  const map = {};
+  for (const r of rows) {
+    const rowCcy = (r[5] ?? 'EUR').toUpperCase();
+    if (rowCcy !== ccy) continue;
+    const sym = (r[0]||'').replace(/\s/g,'');
+    if (!map[sym]) map[sym] = { symbol: sym, name: r[1], rows: [] };
+    map[sym].rows.push({ symbol: sym, name: r[1], qty: +r[2], purchasePrice: +r[3], date: r[4] });
+  }
+  const cur = currentPrice(ccy);
+  return Object.values(map).map(g => {
+    const totalQty  = g.rows.reduce((s, x) => s + x.qty, 0);
+    const totalCost = g.rows.reduce((s, x) => s + x.qty * x.purchasePrice, 0);
+    const avgPrice  = totalCost / totalQty;
+    const totalValue = cur != null ? cur * totalQty : null;
+    const pctChange  = cur != null ? ((cur * totalQty - totalCost) / totalCost) * 100 : null;
+    const gainLoss   = cur != null ? (cur * totalQty - totalCost) : null;
+    return { symbol: g.symbol, name: g.name, avgPrice, totalQty, totalCost, totalValue, pctChange, gainLoss, currentPrice: cur, rows: g.rows, ccy };
+  });
+}
+
+// ─── Sort ─────────────────────────────────────────────────────────────────────
+function applySort(arr) {
+  if (!sortCol) return arr;
+  return [...arr].sort((a, b) => {
+    let va = a[sortCol], vb = b[sortCol];
+    if (va == null) return 1; if (vb == null) return -1;
+    if (typeof va === 'string') return sortDir * va.localeCompare(vb);
+    return sortDir * (va - vb);
+  });
+}
+
+// ─── Summary cards ────────────────────────────────────────────────────────────
+function summaryHtml(holdings, ccy) {
+  const sym = ccySym[ccy] ?? ccy;
+  const cur = currentPrice(ccy);
+  const totalInvested = holdings.reduce((s, h) => s + h.totalCost, 0);
+  const totalValue    = cur != null ? holdings.reduce((s, h) => s + (h.totalValue || 0), 0) : null;
+  const totalGain     = cur != null ? holdings.reduce((s, h) => s + (h.gainLoss  || 0), 0) : null;
+  const totalPct      = totalInvested > 0 && totalGain != null ? (totalGain / totalInvested) * 100 : null;
+  const totalShares   = holdings.reduce((s, h) => s + h.totalQty, 0);
+
+  const cards = [
+    { label: 'Total Invested',   value: `${sym} ${fmt(totalInvested)}`, cls: '' },
+    { label: 'Current Value',    value: totalValue != null ? `${sym} ${fmt(totalValue)}` : '—', cls: '' },
+    { label: 'Total Gain / Loss',value: totalGain  != null ? `${sym} ${fmt(totalGain)}`  : '—', cls: totalGain > 0 ? 'up' : totalGain < 0 ? 'dn' : '' },
+    { label: 'Overall Return',   value: totalPct   != null ? `${totalPct >= 0 ? '+' : ''}${fmt(totalPct)}%` : '—', cls: totalPct > 0 ? 'up' : totalPct < 0 ? 'dn' : '' },
+    { label: 'Total Shares',     value: fmt(totalShares, 4), cls: '' },
+    { label: 'Holdings',         value: holdings.length, cls: '' },
+  ];
+
+  return `<div class="summary-bar">${cards.map(c => `
+    <div class="stat-card">
+      <div class="label">${c.label}</div>
+      <div class="value ${c.cls}">${c.value}</div>
+    </div>`).join('')}</div>`;
+}
+
+// ─── Holdings table ───────────────────────────────────────────────────────────
+function holdingsTableHtml(holdings, ccy) {
+  const sym = ccySym[ccy] ?? ccy;
+
+  const toolbar = `<div class="toolbar">
+    <button class="btn btn-add" onclick="openAddHolding('${ccy}')">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      Add Purchase
+    </button>
+  </div>`;
+
+  if (!holdings.length) {
+    return toolbar + `<div class="table-wrap"><div class="empty-state">No holdings in ${ccy}. Click "Add Purchase" to get started.</div></div>`;
+  }
+
+  const rows = applySort(holdings).map(h => {
+    const active = activeSymbol === h.symbol ? ' active-row' : '';
+    return `<tr class="${active}" onclick="toggleDetail('${h.symbol}','${ccy}')">
+      <td class="symbol-cell">${h.symbol}</td>
+      <td class="name-cell">${h.name}</td>
+      <td class="num">${sym} ${fmt(h.avgPrice)}</td>
+      <td class="num">${fmt(h.totalQty, 4)}</td>
+      <td class="num">${h.totalValue != null ? sym+' '+fmt(h.totalValue) : '—'}</td>
+      <td class="num">${pillHtml(h.pctChange)}</td>
+      <td class="num">${h.gainLoss != null ? pillHtml(h.gainLoss, '') : '—'}</td>
+      <td class="num">${h.currentPrice != null ? renderPriceBadgeInline(ccy) : '—'}</td>
+      <td onclick="event.stopPropagation()" style="white-space:nowrap">
+        <button class="btn btn-edit btn-sm" onclick="openEditHolding('${h.symbol}','${ccy}')">Edit</button>
+        <button class="btn btn-del  btn-sm" onclick="confirmDeleteHolding('${h.symbol}','${ccy}')">Delete</button>
+      </td>
+    </tr>`;
+  }).join('');
+
+  return toolbar + `<div class="table-wrap">
+    <table class="holdings-table" data-ccy="${ccy}">
+      <thead><tr>
+        <th data-col="symbol">Symbol <span class="sort-arrow">↕</span></th>
+        <th data-col="name">Name <span class="sort-arrow">↕</span></th>
+        <th data-col="avgPrice" class="num">Avg Purchase Price <span class="sort-arrow">↕</span></th>
+        <th data-col="totalQty" class="num">Total Qty <span class="sort-arrow">↕</span></th>
+        <th data-col="totalValue" class="num">Total Value (${sym}) <span class="sort-arrow">↕</span></th>
+        <th data-col="pctChange" class="num">% Change <span class="sort-arrow">↕</span></th>
+        <th data-col="gainLoss" class="num">Total Gain/Loss (${sym}) <span class="sort-arrow">↕</span></th>
+        <th data-col="currentPrice" class="num">Current Market Price <span class="sort-arrow">↕</span></th>
+        <th></th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+}
+
+// ─── Render all sections ──────────────────────────────────────────────────────
+function renderAll() {
+  const root = document.getElementById('sectionsRoot');
+  root.innerHTML = SECTIONS.map(sec => {
+    const holdings = buildHoldings(rawRows, sec.id);
+    return `<section class="currency-section" id="section-${sec.id}">
+      <div class="currency-section-header">
+        <span class="currency-flag">${sec.flag}</span>
+        <span class="currency-name">${sec.label}</span>
+        <span class="currency-symbol">${sec.id} ${sec.symbol}</span>
+      </div>
+      ${summaryHtml(holdings, sec.id)}
+      <div class="section-title">Holdings <span class="badge">${holdings.length}</span></div>
+      ${holdingsTableHtml(holdings, sec.id)}
+    </section>`;
+  }).join('');
+
+  // Wire sort headers
+  document.querySelectorAll('.holdings-table th[data-col]').forEach(th => {
+    th.addEventListener('click', () => {
+      const col = th.dataset.col;
+      if (sortCol === col) sortDir *= -1;
+      else { sortCol = col; sortDir = 1; }
+      document.querySelectorAll('.holdings-table th').forEach(t => {
+        t.classList.remove('sorted');
+        const arrow = t.querySelector('.sort-arrow');
+        if (arrow) arrow.textContent = '↕';
+      });
+      th.classList.add('sorted');
+      th.querySelector('.sort-arrow').textContent = sortDir > 0 ? '↑' : '↓';
+      renderAll();
+    });
+  });
+
+  // Re-attach detail panel to its section if open
+  if (activeSymbol) {
+    const h = buildHoldings(rawRows, activeCcy).find(x => x.symbol === activeSymbol);
+    if (h) {
+      const sec = document.getElementById(`section-${activeCcy}`);
+      if (sec) sec.appendChild(document.getElementById('detailPanel'));
+    }
+  }
+}
+
+// ─── Detail panel ─────────────────────────────────────────────────────────────
+let activeCcy = null;
+
+function toggleDetail(symbol, ccy) {
+  if (activeSymbol === symbol && activeCcy === ccy) {
+    activeSymbol = null; activeCcy = null;
+    document.getElementById('detailPanel').classList.remove('visible');
+    renderAll();
+    return;
+  }
+  activeSymbol = symbol; activeCcy = ccy;
+  renderAll();
+  renderDetail(symbol, ccy);
+}
+
+function renderDetail(symbol, ccy) {
+  const holdings = buildHoldings(rawRows, ccy);
+  const h = holdings.find(x => x.symbol === symbol);
+  if (!h) return;
+  const sym = ccySym[ccy] ?? ccy;
+
+  document.getElementById('detailTitle').textContent = `${h.symbol} — ${h.name}`;
+  document.getElementById('detailSubtitle').textContent = `${h.rows.length} purchase transaction${h.rows.length !== 1 ? 's' : ''}`;
+
+  const cur = currentPrice(ccy);
+  const sorted = [...h.rows].sort((a, b) => new Date(a.date) - new Date(b.date));
+
+  // Add button above the detail table
+  const addBtn = document.getElementById('detailAddBtn');
+  if (addBtn) addBtn.onclick = () => openAddTransaction(symbol, h.name, ccy);
+
+  document.getElementById('detailBody').innerHTML = sorted.map((r, i) => {
+    const diff    = cur != null ? cur - r.purchasePrice : null;
+    const diffPct = cur != null ? ((cur - r.purchasePrice) / r.purchasePrice) * 100 : null;
+    const txIdx   = rawRows.findIndex(rr =>
+      rr[0].replace(/\s/g,'') === symbol && +rr[2] === r.qty &&
+      +rr[3] === r.purchasePrice && rr[4] === r.date && (rr[5]??'EUR') === ccy
+    );
+    return `<tr>
+      <td class="symbol-cell">${r.symbol}</td>
+      <td class="name-cell">${r.name}</td>
+      <td>${fmtDate(r.date)}</td>
+      <td class="num">${fmt(r.qty, 4)}</td>
+      <td class="num">${sym} ${fmt(r.purchasePrice)}</td>
+      <td class="num">${cur != null ? sym+' '+fmt(cur) : '—'}</td>
+      <td class="num">${diff != null ? pillHtml(diff, '') : '—'}</td>
+      <td class="num">${pillHtml(diffPct)}</td>
+      <td onclick="event.stopPropagation()" style="white-space:nowrap">
+        <button class="btn btn-edit btn-sm" onclick="openEditTransaction(${txIdx})">Edit</button>
+        <button class="btn btn-del  btn-sm" onclick="confirmDeleteTransaction(${txIdx})">Delete</button>
+      </td>
+    </tr>`;
+  }).join('');
+
+  const panel = document.getElementById('detailPanel');
+  const sec   = document.getElementById(`section-${ccy}`);
+  if (sec) sec.appendChild(panel);
+  panel.classList.add('visible');
+  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function closeDetail() {
+  activeSymbol = null; activeCcy = null;
+  document.getElementById('detailPanel').classList.remove('visible');
+  renderAll();
+}
+
+// ─── Excel upload ─────────────────────────────────────────────────────────────
+document.getElementById('fileUpload').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  try {
+    const buf = await file.arrayBuffer();
+    const wb  = XLSX.read(buf, { type: 'array', cellDates: true });
+    let sheetName = wb.SheetNames.find(s => s.toLowerCase().replace(/[\s-]/g,'') === 'cleantable') || wb.SheetNames[0];
+    const ws   = wb.Sheets[sheetName];
+    const json = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
+
+    let headerIdx = 0;
+    for (let i = 0; i < Math.min(10, json.length); i++) {
+      const rowStr = (json[i] || []).join('|').toLowerCase();
+      if (rowStr.includes('symbol') || rowStr.includes('quantity') || rowStr.includes('stock')) { headerIdx = i; break; }
+    }
+    const headers = (json[headerIdx] || []).map(h => String(h||'').toLowerCase().trim());
+    const colIdx  = name => headers.findIndex(h => h.includes(name));
+    const symI    = Math.max(colIdx('symbol'), 0);
+    const nameI   = colIdx('name')   >= 0 ? colIdx('name')   : 1;
+    const qtyI    = colIdx('qty')    >= 0 ? colIdx('qty')    : colIdx('quantity');
+    const priceI  = colIdx('purchase price') >= 0 ? colIdx('purchase price') : colIdx('price');
+    const dateI   = colIdx('date');
+    const ccyI    = colIdx('currency') >= 0 ? colIdx('currency') : colIdx('ccy');
+
+    const newRows = [];
+    for (let i = headerIdx + 1; i < json.length; i++) {
+      const row = json[i];
+      if (!row) continue;
+      const sym = String(row[symI] || '').trim().replace(/\s+/g, '');
+      if (!sym || sym === 'null') continue;
+      const qty   = parseFloat(row[qtyI]);
+      const price = parseFloat(row[priceI >= 0 ? priceI : 3]);
+      if (isNaN(qty) || isNaN(price)) continue;
+      let date = row[dateI >= 0 ? dateI : 4];
+      if (date instanceof Date) date = date.toISOString().slice(0, 10);
+      else if (typeof date === 'number') {
+        const d = XLSX.SSF.parse_date_code(date);
+        date = `${d.y}-${String(d.m).padStart(2,'0')}-${String(d.d).padStart(2,'0')}`;
+      }
+      const ccy = ccyI >= 0 ? String(row[ccyI] || 'EUR').trim().toUpperCase() : 'EUR';
+      newRows.push([sym, String(row[nameI] || '').trim(), qty, price, date, ccy]);
+    }
+    if (!newRows.length) { showToast('⚠️ No valid rows found in file'); return; }
+    rawRows = newRows;
+    localStorage.setItem('stockPortfolioData', JSON.stringify(rawRows));
+    closeDetail();
+    renderAll();
+    showToast(`✅ Loaded ${newRows.length} transactions from "${sheetName}"`);
+  } catch(err) {
+    console.error(err);
+    showToast('❌ Error reading file: ' + err.message);
+  }
+  e.target.value = '';
+});
+
+// ─── Load persisted data ──────────────────────────────────────────────────────
+function loadSavedData() {
+  try {
+    const saved = localStorage.getItem('stockPortfolioData');
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed) && parsed.length) {
+        // Validate: must have at least [symbol, name, qty, price, date]
+        const valid = parsed.filter(r => Array.isArray(r) && r.length >= 4 && !isNaN(+r[2]) && !isNaN(+r[3]));
+        if (valid.length) {
+          rawRows = valid.map(r => [...r.slice(0,5), (r[5] ?? 'EUR').toString().toUpperCase()]);
+          return; // only replace defaults if saved data is genuinely valid
+        }
+      }
+    }
+  } catch(e) {}
+  // Fall back to DEFAULT_ROWS — either no saved data or it was corrupt
+  rawRows = DEFAULT_ROWS.map(r => [...r, 'EUR']);
+}
+
+// ─── CRUD ─────────────────────────────────────────────────────────────────────
+let modalEditIdx = null;   // null = add mode, number = edit mode (index into rawRows)
+
+function persistAndRefresh() {
+  localStorage.setItem('stockPortfolioData', JSON.stringify(rawRows));
+  renderAll();
+  if (activeSymbol && activeCcy) renderDetail(activeSymbol, activeCcy);
+}
+
+// Open modal to add a brand-new holding (no symbol pre-filled)
+function openAddHolding(ccy) {
+  modalEditIdx = null;
+  document.getElementById('modalTitle').textContent = 'Add Purchase';
+  document.getElementById('fSymbol').value  = '';
+  document.getElementById('fName').value    = '';
+  document.getElementById('fDate').value    = new Date().toISOString().slice(0,10);
+  document.getElementById('fCcy').value     = ccy;
+  document.getElementById('fQty').value     = '';
+  document.getElementById('fPrice').value   = '';
+  document.getElementById('fSymbol').readOnly = false;
+  document.getElementById('fName').readOnly   = false;
+  document.getElementById('txModal').classList.add('open');
+}
+
+// Open modal to add a transaction to an already-known symbol
+function openAddTransaction(symbol, name, ccy) {
+  modalEditIdx = null;
+  document.getElementById('modalTitle').textContent = `Add Transaction — ${symbol}`;
+  document.getElementById('fSymbol').value  = symbol;
+  document.getElementById('fName').value    = name;
+  document.getElementById('fDate').value    = new Date().toISOString().slice(0,10);
+  document.getElementById('fCcy').value     = ccy;
+  document.getElementById('fQty').value     = '';
+  document.getElementById('fPrice').value   = '';
+  document.getElementById('fSymbol').readOnly = true;
+  document.getElementById('fName').readOnly   = true;
+  document.getElementById('txModal').classList.add('open');
+}
+
+// Open modal pre-filled to edit a specific transaction row
+function openEditTransaction(idx) {
+  const r = rawRows[idx];
+  if (!r) return;
+  modalEditIdx = idx;
+  document.getElementById('modalTitle').textContent = 'Edit Transaction';
+  document.getElementById('fSymbol').value  = r[0].replace(/\s/g,'');
+  document.getElementById('fName').value    = r[1];
+  document.getElementById('fDate').value    = r[4] ? r[4].slice(0,10) : '';
+  document.getElementById('fCcy').value     = (r[5] ?? 'EUR').toUpperCase();
+  document.getElementById('fQty').value     = r[2];
+  document.getElementById('fPrice').value   = r[3];
+  document.getElementById('fSymbol').readOnly = false;
+  document.getElementById('fName').readOnly   = false;
+  document.getElementById('txModal').classList.add('open');
+}
+
+// Open modal to edit all transactions of a symbol at once (edit first tx as representative)
+function openEditHolding(symbol, ccy) {
+  const idx = rawRows.findIndex(r => r[0].replace(/\s/g,'') === symbol && (r[5]??'EUR').toUpperCase() === ccy);
+  if (idx >= 0) openEditTransaction(idx);
+}
+
+function closeModal() {
+  document.getElementById('txModal').classList.remove('open');
+  modalEditIdx = null;
+}
+
+function saveTransaction() {
+  const symbol = document.getElementById('fSymbol').value.trim();
+  const name   = document.getElementById('fName').value.trim();
+  const date   = document.getElementById('fDate').value.trim();
+  const ccy    = document.getElementById('fCcy').value;
+  const qty    = parseFloat(document.getElementById('fQty').value);
+  const price  = parseFloat(document.getElementById('fPrice').value);
+
+  if (!symbol)         return showToast('⚠️ Symbol is required');
+  if (!name)           return showToast('⚠️ Name is required');
+  if (!date)           return showToast('⚠️ Date is required');
+  if (isNaN(qty)  || qty   <= 0) return showToast('⚠️ Enter a valid quantity');
+  if (isNaN(price)|| price <= 0) return showToast('⚠️ Enter a valid price');
+
+  const row = [symbol, name, qty, price, date, ccy];
+
+  if (modalEditIdx !== null) {
+    rawRows[modalEditIdx] = row;
+    showToast('✅ Transaction updated');
+  } else {
+    rawRows.push(row);
+    showToast('✅ Transaction added');
+    // Auto-expand the symbol in its section
+    activeSymbol = symbol; activeCcy = ccy;
+  }
+
+  closeModal();
+  persistAndRefresh();
+}
+
+// ── Delete holding (all transactions for a symbol) ─────────────────────────
+function confirmDeleteHolding(symbol, ccy) {
+  const count = rawRows.filter(r => r[0].replace(/\s/g,'') === symbol && (r[5]??'EUR').toUpperCase() === ccy).length;
+  document.getElementById('confirmMsg').textContent =
+    `Delete all ${count} transaction${count !== 1 ? 's' : ''} for ${symbol} (${ccy})? This cannot be undone.`;
+  document.getElementById('confirmOkBtn').onclick = () => {
+    rawRows = rawRows.filter(r => !(r[0].replace(/\s/g,'') === symbol && (r[5]??'EUR').toUpperCase() === ccy));
+    if (activeSymbol === symbol && activeCcy === ccy) { activeSymbol = null; activeCcy = null; }
+    closeConfirm();
+    persistAndRefresh();
+    showToast(`🗑️ Deleted all transactions for ${symbol}`);
+  };
+  document.getElementById('confirmModal').classList.add('open');
+}
+
+// ── Delete single transaction ──────────────────────────────────────────────
+function confirmDeleteTransaction(idx) {
+  const r = rawRows[idx];
+  if (!r) return;
+  document.getElementById('confirmMsg').textContent =
+    `Delete transaction: ${r[2]} shares of ${r[0].replace(/\s/g,'')} at ${ccySym[r[5]??'EUR']}${r[3]} on ${fmtDate(r[4])}?`;
+  document.getElementById('confirmOkBtn').onclick = () => {
+    rawRows.splice(idx, 1);
+    closeConfirm();
+    persistAndRefresh();
+    showToast('🗑️ Transaction deleted');
+  };
+  document.getElementById('confirmModal').classList.add('open');
+}
+
+function closeConfirm() {
+  document.getElementById('confirmModal').classList.remove('open');
+}
+
+// Close modals on overlay click
+document.getElementById('txModal').addEventListener('click', e => { if (e.target === e.currentTarget) closeModal(); });
+document.getElementById('confirmModal').addEventListener('click', e => { if (e.target === e.currentTarget) closeConfirm(); });
+
+// ─── Init ─────────────────────────────────────────────────────────────────────
+async function init() {
+  loadSavedData();
+  renderAll();
+
+  await fetchAllPrices();
+
+  // Update hidden badge elements (kept for JS compatibility)
+  const eur = priceData('EUR');
+  if (eur) {
+    document.getElementById('sapPrice').textContent = `EUR ${fmt(eur.price)}`;
+    if (eur.chg != null) {
+      const sign = eur.chg >= 0 ? '+' : '';
+      const cls  = eur.chg >= 0 ? 'up' : 'dn';
+      document.getElementById('sapChg').innerHTML = `<span class="${cls}">${sign}${fmt(eur.chg)} (${sign}${fmt(eur.chgPct)}%)</span>`;
+    }
+  }
+
+  const fetched = Object.keys(prices).join(', ') || 'none';
+  document.getElementById('priceStatus').textContent = `Live prices: ${fetched} · ${new Date().toLocaleTimeString()}`;
+  if (!Object.keys(prices).length) {
+    document.getElementById('priceStatus').innerHTML = '<span style="color:var(--yellow)">Price fetch failed — showing cost basis only</span>';
+  }
+
+  renderAll();
+}
+
+init();
+</script>
+</body>
+</html>
