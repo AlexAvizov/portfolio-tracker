@@ -468,29 +468,57 @@ class TestBusinessLogic(unittest.TestCase):
 # ═════════════════════════════════════════════════════════════════════════════
 # 4. Edge-case / regression tests
 # ═════════════════════════════════════════════════════════════════════════════
+EDGE_PORT = 18766
+
 class TestEdgeCases(unittest.TestCase):
-    # reuse the same server as TestAPI — it's already running on PORT
+    # uses a separate port so it doesn't race with TestAPI's teardown releasing 18765
+    @classmethod
+    def setUpClass(cls):
+        srv.DB_PATH = tempfile.mktemp(suffix=".db")
+        srv.init_db()
+        srv.http.server.ThreadingHTTPServer.allow_reuse_address = True
+        cls.server = srv.http.server.ThreadingHTTPServer(("", EDGE_PORT), srv.Handler)
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+        time.sleep(0.3)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        if os.path.exists(srv.DB_PATH):
+            os.remove(srv.DB_PATH)
+
     def setUp(self):
-        srv.init_db()   # ensures table exists (idempotent)
         srv.db_clear()
+
+    def _api(self, method, path, body=None):
+        """api() helper pointed at EDGE_PORT."""
+        url  = f"http://localhost:{EDGE_PORT}{path}"
+        data = json.dumps(body).encode() if body is not None else None
+        req  = urllib.request.Request(url, data=data, method=method,
+                                      headers={"Content-Type": "application/json"} if data else {})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
 
     def test_symbol_with_whitespace_is_stored(self):
         payload = {**TX_FIXTURE, "symbol": "  50724  "}
-        _, row = api("POST", "/api/transactions", payload)
-        # symbol stored as-is from API; stripping is the UI's job
+        _, row = self._api("POST", "/api/transactions", payload)
         self.assertIn("50724", row["symbol"])
 
     def test_very_small_quantity(self):
         payload = {**TX_FIXTURE, "quantity": 0.0001}
-        status, row = api("POST", "/api/transactions", payload)
+        status, row = self._api("POST", "/api/transactions", payload)
         self.assertEqual(status, 201)
         self.assertAlmostEqual(row["quantity"], 0.0001, places=4)
 
     def test_import_then_get_round_trip(self):
         rows = [[f"S{i}", f"Stock {i}", float(i), float(i*10), "2025-01-01", "EUR"]
                 for i in range(1, 11)]
-        api("POST", "/api/transactions/import", {"rows": rows})
-        _, fetched = api("GET", "/api/transactions")
+        self._api("POST", "/api/transactions/import", {"rows": rows})
+        _, fetched = self._api("GET", "/api/transactions")
         self.assertEqual(len(fetched), 10)
         symbols = {r["symbol"] for r in fetched}
         self.assertEqual(symbols, {f"S{i}" for i in range(1, 11)})
@@ -498,18 +526,18 @@ class TestEdgeCases(unittest.TestCase):
     def test_delete_one_of_many_leaves_others(self):
         ids = []
         for i in range(5):
-            _, r = api("POST", "/api/transactions", {**TX_FIXTURE, "symbol": f"X{i}"})
+            _, r = self._api("POST", "/api/transactions", {**TX_FIXTURE, "symbol": f"X{i}"})
             ids.append(r["id"])
-        api("DELETE", f"/api/transactions/{ids[2]}")
-        _, rows = api("GET", "/api/transactions")
+        self._api("DELETE", f"/api/transactions/{ids[2]}")
+        _, rows = self._api("GET", "/api/transactions")
         self.assertEqual(len(rows), 4)
         self.assertNotIn(ids[2], [r["id"] for r in rows])
 
     def test_update_does_not_affect_other_rows(self):
-        _, r1 = api("POST", "/api/transactions", {**TX_FIXTURE, "symbol": "AAA"})
-        _, r2 = api("POST", "/api/transactions", {**TX_FIXTURE, "symbol": "BBB"})
-        api("PUT", f"/api/transactions/{r1['id']}", {**TX_FIXTURE, "symbol": "AAA-MOD"})
-        _, rows = api("GET", "/api/transactions")
+        _, r1 = self._api("POST", "/api/transactions", {**TX_FIXTURE, "symbol": "AAA"})
+        _, r2 = self._api("POST", "/api/transactions", {**TX_FIXTURE, "symbol": "BBB"})
+        self._api("PUT", f"/api/transactions/{r1['id']}", {**TX_FIXTURE, "symbol": "AAA-MOD"})
+        _, rows = self._api("GET", "/api/transactions")
         syms = {r["symbol"] for r in rows}
         self.assertIn("AAA-MOD", syms)
         self.assertIn("BBB", syms)

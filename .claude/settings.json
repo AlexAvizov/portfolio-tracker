@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 120,
+            "statusMessage": "Running tests before PR...",
+            "command": "cmd=$(jq -r '.tool_input.command'); if echo \"$cmd\" | grep -qE '^gh pr create'; then cd /Users/i057517/Desktop/portfolio-tracker && python3 test_portfolio.py; rc=$?; if [ $rc -ne 0 ]; then echo '{\"decision\":\"block\",\"reason\":\"Tests failed — fix them before opening a PR.\"}'; exit 1; fi; fi"
+          }
+        ]
+      }
+    ]
+  }
+}
