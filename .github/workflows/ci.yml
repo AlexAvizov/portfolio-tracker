@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install coverage
+
+      - name: Run tests with coverage
+        run: |
+          python3 -m coverage run test_portfolio.py
+          python3 -m coverage report --include="stock-server.py"
+          python3 -m coverage xml --include="stock-server.py" -o coverage.xml
+
+      - name: Coverage summary
+        run: |
+          TOTAL=$(python3 -m coverage report --include="stock-server.py" --format=total)
+          echo "### Test Coverage" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Suite | Tests |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| Unit (DB layer) | 12 |" >> $GITHUB_STEP_SUMMARY
+          echo "| Integration (API) | 20 |" >> $GITHUB_STEP_SUMMARY
+          echo "| Business Logic | 11 |" >> $GITHUB_STEP_SUMMARY
+          echo "| Edge / Regression | 5 |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Total** | **48** |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Server code coverage: ${TOTAL}%**" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
