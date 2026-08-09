@@ -653,7 +653,6 @@ function holdingsTableHtml(holdings, ccy) {
       <td class="num">${h.gainLoss != null ? pillHtml(h.gainLoss, '') : '—'}</td>
       <td class="num">${h.currentPrice != null ? renderPriceBadgeInline(ccy) : '—'}</td>
       <td onclick="event.stopPropagation()" style="white-space:nowrap">
-        <button class="btn btn-edit btn-sm" onclick="openEditHolding('${h.symbol}','${ccy}')">Edit</button>
         <button class="btn btn-del  btn-sm" onclick="confirmDeleteHolding('${h.symbol}','${ccy}')">Delete</button>
       </td>
     </tr>`;
