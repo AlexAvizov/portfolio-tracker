@@ -303,7 +303,7 @@
   <!-- Currency sections rendered dynamically by JS -->
 </main>
 
-<!-- Detail panel (shared, appended to active section by JS) -->
+<!-- Detail panel: lives outside sectionsRoot so renderAll() never destroys it -->
 <div class="detail-panel" id="detailPanel">
     <div class="detail-header">
       <div>
@@ -710,15 +710,6 @@ function renderAll() {
       renderAll();
     });
   });
-
-  // Re-attach detail panel to its section if open
-  if (activeSymbol) {
-    const h = buildHoldings(rawRows, activeCcy).find(x => x.symbol === activeSymbol);
-    if (h) {
-      const sec = document.getElementById(`section-${activeCcy}`);
-      if (sec) sec.appendChild(document.getElementById('detailPanel'));
-    }
-  }
 }
 
 // ─── Detail panel ─────────────────────────────────────────────────────────────
@@ -776,8 +767,6 @@ function renderDetail(symbol, ccy) {
   }).join('');
 
   const panel = document.getElementById('detailPanel');
-  const sec   = document.getElementById(`section-${ccy}`);
-  if (sec) sec.appendChild(panel);
   panel.classList.add('visible');
   panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
