@@ -100,17 +100,19 @@ def db_clear():
             conn.execute("DELETE FROM transactions")
             conn.commit()
 
-# ─── Price fetching ────────────────────────────────────────────────────────────
+# ─── Price & ticker fetching ───────────────────────────────────────────────────
 _price_cache  = {}
+_ticker_cache = {}
 _price_lock   = threading.Lock()
-CACHE_TTL     = 60
+CACHE_TTL        = 60
+TICKER_CACHE_TTL = 3600
 
 YAHOO_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
     "Accept": "application/json",
 }
 
-def fetch_yahoo_quote(yf_symbol, currency):
+def fetch_yahoo_quote(yf_symbol, currency=None):
     with _price_lock:
         cached = _price_cache.get(yf_symbol)
         if cached and time.time() - cached["ts"] < CACHE_TTL:
@@ -137,6 +139,54 @@ def fetch_yahoo_quote(yf_symbol, currency):
             return result
     except Exception as e:
         print(f"  [price] {yf_symbol} failed: {e}")
+    return None
+
+def _clean_stock_name(name):
+    """Strip custodian/fund suffixes and corporate entity words to get a Yahoo-searchable name."""
+    import re
+    # Remove trailing custodian/product suffixes after hyphen (e.g. -SPONSORE, -ADR)
+    name = re.sub(r'\s*[-–]\s*\S.*$', '', name)
+    # Remove trailing parenthetical (e.g. (ADR))
+    name = re.sub(r'\s*\(.*?\)\s*$', '', name)
+    # Remove trailing corporate entity words that confuse Yahoo
+    name = re.sub(r'\s+\b(AG|SE|SA|NV|PLC|LTD|LLC|INC|CORP|GmbH|KGaA)\b\.?\s*$', '', name, flags=re.I)
+    return name.strip()
+
+def fetch_yahoo_search(query, currency=None):
+    query = _clean_stock_name(query)
+    key = f"{query.lower().strip()}|{currency or ''}"
+    with _price_lock:
+        cached = _ticker_cache.get(key)
+        if cached and time.time() - cached["ts"] < TICKER_CACHE_TTL:
+            return cached["data"]
+
+    # Exchanges preferred per currency
+    EUR_EXCHANGES = {"GER", "FRA", "VIE", "MIL", "AMS", "PAR", "MCE", "BRU", "LIS", "HEL"}
+    USD_EXCHANGES = {"NYQ", "NAS", "PCX", "ASE"}
+
+    try:
+        q   = urllib.parse.quote(query)
+        url = f"https://query1.finance.yahoo.com/v1/finance/search?q={q}&quotesCount=8&newsCount=0"
+        req = urllib.request.Request(url, headers=YAHOO_HEADERS)
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            raw = resp.read()
+            if resp.info().get("Content-Encoding") == "gzip":
+                raw = gzip.decompress(raw)
+            data = json.loads(raw)
+        quotes = [q for q in data.get("quotes", []) if q.get("symbol")]
+        ticker = None
+        if quotes:
+            if currency == "EUR":
+                ticker = next((q["symbol"] for q in quotes if q.get("exchange") in EUR_EXCHANGES), None)
+            elif currency == "USD":
+                ticker = next((q["symbol"] for q in quotes if q.get("exchange") in USD_EXCHANGES), None)
+            if not ticker:
+                ticker = quotes[0]["symbol"]
+        with _price_lock:
+            _ticker_cache[key] = {"data": ticker, "ts": time.time()}
+        return ticker
+    except Exception as e:
+        print(f"  [search] {query!r} failed: {e}")
     return None
 
 # ─── HTTP Handler ─────────────────────────────────────────────────────────────
@@ -177,11 +227,36 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.json_response(db_get_all())
             return
 
-        # /api/price — live price (EUR + USD)
+        # /api/ticker-search?q=<name>&currency=EUR — resolve stock name to Yahoo ticker
+        if path == "/api/ticker-search":
+            params   = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            q        = (params.get("q")        or [""])[0].strip()
+            currency = (params.get("currency") or [""])[0].strip().upper() or None
+            if not q:
+                self.json_response({"error": "q param required"}, 400)
+                return
+            ticker = fetch_yahoo_search(q, currency)
+            self.json_response({"ticker": ticker})
+            return
+
+        # /api/price — live prices
+        # ?symbols=SAP.DE,SAP  → { "SAP.DE": {...}, "SAP": {...} }  (per-symbol, no currency)
+        # (no params)          → { "EUR": {...}, "USD": {...} }      (legacy)
         if path == "/api/price":
-            eur = fetch_yahoo_quote("SAP.DE", "EUR")
-            usd = fetch_yahoo_quote("SAP",    "USD")
-            self.json_response({"EUR": eur, "USD": usd})
+            params  = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            symbols = (params.get("symbols") or [""])[0].strip()
+            if symbols:
+                tickers = [s.strip() for s in symbols.split(",") if s.strip()][:20]
+                result  = {}
+                for t in tickers:
+                    q = fetch_yahoo_quote(t)
+                    if q:
+                        result[t] = q
+                self.json_response(result)
+            else:
+                eur = fetch_yahoo_quote("SAP.DE", "EUR")
+                usd = fetch_yahoo_quote("SAP",    "USD")
+                self.json_response({"EUR": eur, "USD": usd})
             return
 
         # static files

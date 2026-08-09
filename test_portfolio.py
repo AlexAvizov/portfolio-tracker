@@ -6,7 +6,7 @@ Tests: API endpoints, DB operations, price fetching, UI behaviour (via HTTP)
 Run:  python3 test_portfolio.py
       python3 test_portfolio.py -v   (verbose)
 """
-import unittest, json, threading, time, os, sys, tempfile, shutil, urllib.request, urllib.error
+import unittest, json, threading, time, os, sys, tempfile, shutil, urllib.request, urllib.error, unittest.mock
 
 # ── make sure we can import the server module ─────────────────────────────────
 SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -381,9 +381,13 @@ class TestBusinessLogic(unittest.TestCase):
     Keeps them independent of a browser so they run in CI.
     """
 
-    def build_holdings(self, rows, ccy, current_price=None):
-        """Python mirror of buildHoldings() in index.html."""
+    def build_holdings(self, rows, ccy, prices_by_symbol=None):
+        """Python mirror of buildHoldings() in index.html.
+        prices_by_symbol: dict keyed by internal symbol, e.g. {"SAP": 150.0}
+        """
         from collections import defaultdict
+        if prices_by_symbol is None:
+            prices_by_symbol = {}
         groups = defaultdict(list)
         for r in rows:
             sym  = r[0].replace(" ", "")
@@ -396,10 +400,10 @@ class TestBusinessLogic(unittest.TestCase):
             total_qty  = sum(l["qty"] for l in lots)
             total_cost = sum(l["qty"] * l["price"] for l in lots)
             avg_price  = total_cost / total_qty
-            cur        = current_price
-            total_value = cur * total_qty if cur else None
-            pct_change  = ((cur * total_qty - total_cost) / total_cost * 100) if cur else None
-            gain_loss   = (cur * total_qty - total_cost) if cur else None
+            cur        = prices_by_symbol.get(sym)
+            total_value = cur * total_qty if cur is not None else None
+            pct_change  = ((cur * total_qty - total_cost) / total_cost * 100) if cur is not None else None
+            gain_loss   = (cur * total_qty - total_cost) if cur is not None else None
             result.append({"symbol": sym, "totalQty": total_qty, "totalCost": total_cost,
                             "avgPrice": avg_price, "totalValue": total_value,
                             "pctChange": pct_change, "gainLoss": gain_loss})
@@ -431,19 +435,19 @@ class TestBusinessLogic(unittest.TestCase):
     # ── gain / loss ───────────────────────────────────────────────────────────
     def test_gain_when_price_rises(self):
         rows = [["SAP","SAP SE", 10.0, 100.0, "2025-01-01", "EUR"]]
-        h = self.build_holdings(rows, "EUR", current_price=150.0)[0]
+        h = self.build_holdings(rows, "EUR", prices_by_symbol={"SAP": 150.0})[0]
         self.assertAlmostEqual(h["gainLoss"],  500.0)   # 10*(150-100)
         self.assertAlmostEqual(h["pctChange"],  50.0)
 
     def test_loss_when_price_falls(self):
         rows = [["SAP","SAP SE", 10.0, 100.0, "2025-01-01", "EUR"]]
-        h = self.build_holdings(rows, "EUR", current_price=80.0)[0]
+        h = self.build_holdings(rows, "EUR", prices_by_symbol={"SAP": 80.0})[0]
         self.assertAlmostEqual(h["gainLoss"],  -200.0)
         self.assertAlmostEqual(h["pctChange"],  -20.0)
 
     def test_no_gain_when_no_current_price(self):
         rows = [["SAP","SAP SE", 10.0, 100.0, "2025-01-01", "EUR"]]
-        h = self.build_holdings(rows, "EUR", current_price=None)[0]
+        h = self.build_holdings(rows, "EUR")[0]
         self.assertIsNone(h["gainLoss"])
         self.assertIsNone(h["pctChange"])
 
@@ -495,7 +499,7 @@ class TestBusinessLogic(unittest.TestCase):
             ["SAP","SAP SE", 5.0, 200.0, "2025-01-01", "EUR"],
             ["SAP","SAP SE", 5.0, 200.0, "2025-02-01", "EUR"],
         ]
-        holdings = self.build_holdings(rows, "EUR", current_price=250.0)
+        holdings = self.build_holdings(rows, "EUR", prices_by_symbol={"SAP": 250.0})
         total_gain = sum(h["gainLoss"] for h in holdings)
         # 10 shares * (250-200) = 500
         self.assertAlmostEqual(total_gain, 500.0)
@@ -513,14 +517,173 @@ class TestBusinessLogic(unittest.TestCase):
     def test_new_symbol_gain_loss_none_without_price(self):
         """A brand-new symbol with no live price has null gain/loss."""
         rows = [["NEWCO", "New Corp", 3.0, 50.0, "2025-01-01", "EUR"]]
-        h = self.build_holdings(rows, "EUR", current_price=None)[0]
+        h = self.build_holdings(rows, "EUR")[0]
         self.assertIsNone(h["gainLoss"])
         self.assertIsNone(h["pctChange"])
         self.assertIsNone(h["totalValue"])
 
+    # ── per-symbol independent prices ─────────────────────────────────────────
+    def test_two_symbols_independent_prices(self):
+        """Each symbol uses its own price independently."""
+        rows = [
+            ["AAA", "Alpha", 10.0, 100.0, "2025-01-01", "EUR"],
+            ["BBB", "Beta",  10.0, 100.0, "2025-01-01", "EUR"],
+        ]
+        holdings = self.build_holdings(rows, "EUR", prices_by_symbol={"AAA": 150.0, "BBB": 80.0})
+        by_sym = {h["symbol"]: h for h in holdings}
+        self.assertAlmostEqual(by_sym["AAA"]["gainLoss"],  500.0)
+        self.assertAlmostEqual(by_sym["BBB"]["gainLoss"], -200.0)
+
+    def test_missing_price_does_not_affect_other_symbols(self):
+        """A symbol without a price shows None while others still compute."""
+        rows = [
+            ["AAA", "Alpha", 10.0, 100.0, "2025-01-01", "EUR"],
+            ["BBB", "Beta",  10.0, 100.0, "2025-01-01", "EUR"],
+        ]
+        holdings = self.build_holdings(rows, "EUR", prices_by_symbol={"AAA": 120.0})
+        by_sym = {h["symbol"]: h for h in holdings}
+        self.assertAlmostEqual(by_sym["AAA"]["gainLoss"], 200.0)
+        self.assertIsNone(by_sym["BBB"]["gainLoss"])
+
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 4. Edge-case / regression tests
+# 4. Ticker search tests — unit tests for fetch_yahoo_search
+# ═════════════════════════════════════════════════════════════════════════════
+class TestTickerSearch(unittest.TestCase):
+
+    def setUp(self):
+        # Clear ticker cache before each test
+        with srv._price_lock:
+            srv._ticker_cache.clear()
+
+    def _mock_search(self, quotes):
+        """Return a urlopen context manager that yields fake Yahoo search JSON."""
+        import io
+        body = json.dumps({"quotes": quotes}).encode()
+        class FakeResp:
+            def read(self): return body
+            def info(self): return {}
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+        return FakeResp()
+
+    def test_returns_first_quote_symbol(self):
+        with unittest.mock.patch.object(srv.urllib.request, "urlopen",
+                                 return_value=self._mock_search([{"symbol": "SAP.DE"}, {"symbol": "SAP"}])):
+            result = srv.fetch_yahoo_search("SAP AG")
+        self.assertEqual(result, "SAP.DE")
+
+    def test_returns_none_for_empty_quotes(self):
+        with unittest.mock.patch.object(srv.urllib.request, "urlopen",
+                                 return_value=self._mock_search([])):
+            result = srv.fetch_yahoo_search("UNKNOWN CORP XYZ")
+        self.assertIsNone(result)
+
+    def test_caches_result(self):
+        with unittest.mock.patch.object(srv.urllib.request, "urlopen",
+                                 return_value=self._mock_search([{"symbol": "SAP.DE"}])) as m:
+            srv.fetch_yahoo_search("SAP AG")
+            srv.fetch_yahoo_search("SAP AG")   # second call — should hit cache
+            self.assertEqual(m.call_count, 1)  # urlopen called only once
+
+    def test_returns_none_on_network_error(self):
+        with unittest.mock.patch.object(srv.urllib.request, "urlopen", side_effect=Exception("timeout")):
+            result = srv.fetch_yahoo_search("SAP AG")
+        self.assertIsNone(result)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 5. Ticker-search & multi-symbol price — API integration tests
+# ═════════════════════════════════════════════════════════════════════════════
+TICKER_PORT = 18767
+
+class TestTickerAPI(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        srv.DB_PATH = tempfile.mktemp(suffix=".db")
+        srv.init_db()
+        srv.http.server.ThreadingHTTPServer.allow_reuse_address = True
+        cls.server = srv.http.server.ThreadingHTTPServer(("", TICKER_PORT), srv.Handler)
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+        time.sleep(0.3)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        if os.path.exists(srv.DB_PATH):
+            os.remove(srv.DB_PATH)
+
+    def setUp(self):
+        with srv._price_lock:
+            srv._ticker_cache.clear()
+            srv._price_cache.clear()
+
+    def _api(self, path):
+        url = f"http://localhost:{TICKER_PORT}{path}"
+        req = urllib.request.Request(url)
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    # ── /api/ticker-search ────────────────────────────────────────────────────
+    def test_ticker_search_missing_q_returns_400(self):
+        status, body = self._api("/api/ticker-search")
+        self.assertEqual(status, 400)
+        self.assertIn("error", body)
+
+    def test_ticker_search_returns_ticker(self):
+        # Pre-seed cache with EUR-aware key (query is cleaned to "sap" from "SAP AG")
+        with srv._price_lock:
+            srv._ticker_cache["sap|EUR"] = {"data": "SAP.DE", "ts": time.time()}
+        status, body = self._api("/api/ticker-search?q=SAP+AG&currency=EUR")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["ticker"], "SAP.DE")
+
+    def test_ticker_search_returns_null_on_no_match(self):
+        with srv._price_lock:
+            srv._ticker_cache["noresult|"] = {"data": None, "ts": time.time()}
+        status, body = self._api("/api/ticker-search?q=NORESULT")
+        self.assertEqual(status, 200)
+        self.assertIsNone(body["ticker"])
+
+    # ── /api/price?symbols= ───────────────────────────────────────────────────
+    def _seed_price(self, ticker, price=172.3, prev=169.26):
+        result = {"price": price, "prev": prev,
+                  "chg": price - prev, "chgPct": (price - prev) / prev * 100,
+                  "currency": None, "symbol": ticker, "source": "Yahoo Finance"}
+        with srv._price_lock:
+            srv._price_cache[ticker] = {"data": result, "ts": time.time()}
+
+    def test_price_with_symbols_param_returns_ticker_keyed_dict(self):
+        self._seed_price("SAP.DE")
+        status, body = self._api("/api/price?symbols=SAP.DE")
+        self.assertEqual(status, 200)
+        self.assertIn("SAP.DE", body)
+        self.assertAlmostEqual(body["SAP.DE"]["price"], 172.3)
+
+    def test_price_no_params_returns_legacy_eur_usd(self):
+        self._seed_price("SAP.DE")
+        self._seed_price("SAP", price=197.3, prev=195.5)
+        status, body = self._api("/api/price")
+        self.assertEqual(status, 200)
+        self.assertIn("EUR", body)
+        self.assertIn("USD", body)
+
+    def test_price_symbols_capped_at_20(self):
+        # Seed 25 tickers; only first 20 should appear in response
+        for i in range(25):
+            self._seed_price(f"T{i}", price=10.0 + i, prev=9.0 + i)
+        symbols = ",".join([f"T{i}" for i in range(25)])
+        status, body = self._api(f"/api/price?symbols={symbols}")
+        self.assertEqual(status, 200)
+        self.assertLessEqual(len(body), 20)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 7. Edge-case / regression tests
 # ═════════════════════════════════════════════════════════════════════════════
 EDGE_PORT = 18766
 
@@ -606,7 +769,7 @@ if __name__ == "__main__":
 
     loader = unittest.TestLoader()
     suite  = unittest.TestSuite()
-    for cls in [TestDatabase, TestAPI, TestBusinessLogic, TestEdgeCases]:
+    for cls in [TestDatabase, TestAPI, TestBusinessLogic, TestTickerSearch, TestTickerAPI, TestEdgeCases]:
         suite.addTests(loader.loadTestsFromTestCase(cls))
 
     verbosity = 2 if "-v" in sys.argv else 1

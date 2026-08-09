@@ -145,20 +145,44 @@
   .pill-zero { background: rgba(148,163,184,0.15); color: var(--text-muted); }
 
   /* ── Inline transaction expansion ── */
-  tr.active-row { background: rgba(79,142,247,0.1); border-left: 3px solid var(--accent); }
+  tr.active-row { background: rgba(79,142,247,0.08); }
+  tr.active-row td:first-child { border-left: 3px solid var(--accent); }
   tr.expansion-row td { padding: 0; border-top: none; }
   .expansion-inner {
     background: var(--surface2);
     border-top: 2px solid var(--accent);
-    border-bottom: 1px solid var(--border);
-    padding: 14px 18px 18px;
+    border-bottom: 2px solid var(--border);
+    padding: 16px 20px 20px;
   }
   .expansion-header {
     display: flex; align-items: center; justify-content: space-between;
-    margin-bottom: 10px;
+    margin-bottom: 14px;
   }
-  .expansion-title { font-size: 13px; font-weight: 600; color: var(--text); }
-  .expansion-subtitle { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+  .expansion-title { font-size: 14px; font-weight: 700; color: var(--text); }
+  .expansion-subtitle { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
+  .expansion-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .expansion-table thead tr { background: var(--surface); }
+  .expansion-table th {
+    padding: 9px 14px;
+    text-align: left;
+    color: var(--text-muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    font-weight: 600;
+    white-space: nowrap;
+    border-bottom: 1px solid var(--border);
+  }
+  .expansion-table th.num { text-align: right; }
+  .expansion-table td {
+    padding: 9px 14px;
+    border-top: 1px solid var(--border);
+    white-space: nowrap;
+    color: var(--text);
+  }
+  .expansion-table td.num { text-align: right; }
+  .expansion-table tbody tr:hover { background: rgba(255,255,255,0.03); }
+  .expansion-table .date-cell { color: var(--text-muted); font-size: 12px; }
 
   .inline-price-badge {
     display: inline-flex; flex-direction: column; align-items: flex-end;
@@ -430,26 +454,79 @@ const DEFAULT_ROWS = [
 // Each raw row: [symbol, name, qty, purchasePrice, date, currency]
 // currency defaults to 'EUR' for existing data
 let rawRows = DEFAULT_ROWS.map(r => [...r, r[5] ?? 'EUR']);
-let prices   = {};   // { EUR: {price, prev, chg, chgPct, currency, symbol, source}, USD: {...}, ILS: {...} }
+let prices    = {};  // { internalSymbol: {price, prev, chg, chgPct, currency, yfTicker, source} }
+let tickerMap = {};  // { internalSymbol: "SAP.DE" } — loaded from localStorage
 let activeSymbol = null;
 let sortCol = null, sortDir = 1;
 
-// Convenience
-const currentPrice = (ccy) => prices[ccy]?.price ?? null;
-const priceData    = (ccy) => prices[ccy] ?? null;
+// Convenience — keyed by internal symbol
+const currentPrice = (sym) => prices[sym]?.price ?? null;
+const priceData    = (sym) => prices[sym] ?? null;
 
 // Section definitions
 const SECTIONS = [
-  { id: 'EUR', label: 'Invested in Euro',           flag: '🇪🇺', symbol: '€',  yfSymbol: 'SAP.DE' },
-  { id: 'USD', label: 'Invested in US Dollar',      flag: '🇺🇸', symbol: '$',  yfSymbol: 'SAP'    },
-  { id: 'ILS', label: 'Invested in Israeli Shekel', flag: '🇮🇱', symbol: '₪',  yfSymbol: null     },
+  { id: 'EUR', label: 'Invested in Euro',           flag: '🇪🇺', symbol: '€'  },
+  { id: 'USD', label: 'Invested in US Dollar',      flag: '🇺🇸', symbol: '$'  },
+  { id: 'ILS', label: 'Invested in Israeli Shekel', flag: '🇮🇱', symbol: '₪'  },
 ];
+
+// ─── Ticker resolution ─────────────────────────────────────────────────────────
+const TICKER_MAP_KEY = 'yfTickerMap';
+
+function loadTickerMap() {
+  try { return JSON.parse(localStorage.getItem(TICKER_MAP_KEY) || '{}'); } catch(e) { return {}; }
+}
+function saveTickerMap() {
+  localStorage.setItem(TICKER_MAP_KEY, JSON.stringify(tickerMap));
+}
+
+async function searchTicker(name, currency) {
+  // Server proxy first (avoids CORS, uses currency hint for exchange preference)
+  try {
+    const r = await fetch(
+      `http://localhost:8765/api/ticker-search?q=${encodeURIComponent(name)}&currency=${currency}`,
+      { signal: AbortSignal.timeout(5000) });
+    if (r.ok) {
+      const d = await r.json();
+      if (d.ticker) return d.ticker;
+    }
+  } catch(e) { /* server not running */ }
+  // Direct Yahoo Finance fallback (no exchange preference)
+  try {
+    const r = await fetch(`https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(name)}&quotesCount=3&newsCount=0`,
+                          { signal: AbortSignal.timeout(8000) });
+    if (!r.ok) return null;
+    const d = await r.json();
+    return d?.quotes?.[0]?.symbol ?? null;
+  } catch(e) { return null; }
+}
+
+async function resolveAllTickers() {
+  tickerMap = loadTickerMap();
+  // Collect distinct (internalSymbol, name, currency) — use first seen currency per symbol
+  const seen = new Map();
+  for (const r of rawRows) {
+    const sym = (r[0]||'').replace(/\s/g,'');
+    const ccy = (r[5] ?? 'EUR').toUpperCase();
+    if (sym && !seen.has(sym)) seen.set(sym, { name: r[1], ccy });
+  }
+  let changed = false;
+  for (const [sym, { name, ccy }] of seen) {
+    if (tickerMap[sym] && !tickerMap[sym].needsRefresh) continue;
+    const ticker = await searchTicker(name, ccy);
+    if (ticker) {
+      tickerMap[sym] = { ticker, name, resolvedAt: Date.now() };
+      changed = true;
+    }
+  }
+  if (changed) saveTickerMap();
+}
 
 // ─── Price fetching ────────────────────────────────────────────────────────────
 
-async function fetchYahooQuote(yfSymbol, currency) {
+async function fetchYahooQuote(yfTicker) {
   try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${yfSymbol}?interval=1d&range=1d`;
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${yfTicker}?interval=1d&range=1d`;
     const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
     if (!r.ok) return null;
     const d = await r.json();
@@ -459,29 +536,51 @@ async function fetchYahooQuote(yfSymbol, currency) {
     if (!price || isNaN(price)) return null;
     const chg    = prev ? price - prev : null;
     const chgPct = prev ? ((price - prev) / prev) * 100 : null;
-    return { price, prev, chg, chgPct, currency, symbol: yfSymbol, source: 'Yahoo Finance' };
+    return { price, prev, chg, chgPct, yfTicker, source: 'Yahoo Finance' };
   } catch(e) { return null; }
 }
 
 async function fetchAllPrices() {
-  // Try server first (returns both EUR+USD in one call), fall back to direct Yahoo Finance
+  // Build map: yfTicker -> [internalSymbols]  and  internalSymbol -> currency
+  const tickerToSyms = {};
+  const symToCcy = {};
+  for (const r of rawRows) {
+    const sym = (r[0]||'').replace(/\s/g,'');
+    const ccy = (r[5] ?? 'EUR').toUpperCase();
+    if (!sym) continue;
+    symToCcy[sym] = ccy;
+    const entry = tickerMap[sym];
+    if (!entry?.ticker) continue;
+    if (!tickerToSyms[entry.ticker]) tickerToSyms[entry.ticker] = [];
+    if (!tickerToSyms[entry.ticker].includes(sym)) tickerToSyms[entry.ticker].push(sym);
+  }
+  const allTickers = Object.keys(tickerToSyms);
+  if (!allTickers.length) return;
+
+  let quotesByTicker = {};
+
+  // Try server first
   try {
-    const r = await fetch('http://localhost:8765/api/price', { signal: AbortSignal.timeout(4000) });
-    if (r.ok) {
-      const d = await r.json();
-      if (d.EUR) prices['EUR'] = d.EUR;
-      if (d.USD) prices['USD'] = d.USD;
-      return;
-    }
+    const r = await fetch(`http://localhost:8765/api/price?symbols=${allTickers.join(',')}`,
+                          { signal: AbortSignal.timeout(5000) });
+    if (r.ok) quotesByTicker = await r.json();
   } catch(e) { /* server not running */ }
 
-  // Direct Yahoo Finance fallback
-  const [eur, usd] = await Promise.all([
-    fetchYahooQuote('SAP.DE', 'EUR'),
-    fetchYahooQuote('SAP',    'USD'),
-  ]);
-  if (eur) prices['EUR'] = eur;
-  if (usd) prices['USD'] = usd;
+  // Direct fallback for any ticker the server didn't return
+  const missing = allTickers.filter(t => !quotesByTicker[t]);
+  if (missing.length) {
+    const results = await Promise.all(missing.map(t => fetchYahooQuote(t)));
+    missing.forEach((t, i) => { if (results[i]) quotesByTicker[t] = results[i]; });
+  }
+
+  // Map quotes back to internal symbols
+  for (const [ticker, syms] of Object.entries(tickerToSyms)) {
+    const q = quotesByTicker[ticker];
+    if (!q) continue;
+    for (const sym of syms) {
+      prices[sym] = { ...q, currency: symToCcy[sym], yfTicker: ticker };
+    }
+  }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -496,10 +595,11 @@ function pillHtml(val, suffix='%') {
   return `<span class="pill ${cls}">${sign}${fmt(val)}${suffix}</span>`;
 }
 
-function renderPriceBadgeInline(ccy) {
-  const p = priceData(ccy);
+function renderPriceBadgeInline(sym) {
+  const p = priceData(sym);
   if (!p) return '—';
-  const sym = ccySym[ccy] ?? ccy;
+  const currency = p.currency ?? 'EUR';
+  const s = ccySym[currency] ?? currency;
   let chgHtml = '';
   if (p.chg != null) {
     const sign = p.chg >= 0 ? '+' : '';
@@ -507,8 +607,8 @@ function renderPriceBadgeInline(ccy) {
     chgHtml = `<span class="ipc ${cls}">${sign}${fmt(p.chg)} (${sign}${fmt(p.chgPct)}%)</span>`;
   }
   return `<div class="inline-price-badge">
-    <span class="ipt">${p.symbol} · ${p.source}</span>
-    <span class="ipv">${sym} ${fmt(p.price)}</span>
+    <span class="ipt">${p.yfTicker ?? sym} · ${p.source}</span>
+    <span class="ipv">${s} ${fmt(p.price)}</span>
     ${chgHtml}
   </div>`;
 }
@@ -530,11 +630,11 @@ function buildHoldings(rows, ccy) {
     if (!map[sym]) map[sym] = { symbol: sym, name: r[1], rows: [] };
     map[sym].rows.push({ symbol: sym, name: r[1], qty: +r[2], purchasePrice: +r[3], date: r[4] });
   }
-  const cur = currentPrice(ccy);
   return Object.values(map).map(g => {
     const totalQty  = g.rows.reduce((s, x) => s + x.qty, 0);
     const totalCost = g.rows.reduce((s, x) => s + x.qty * x.purchasePrice, 0);
     const avgPrice  = totalCost / totalQty;
+    const cur       = currentPrice(g.symbol);
     const totalValue = cur != null ? cur * totalQty : null;
     const pctChange  = cur != null ? ((cur * totalQty - totalCost) / totalCost) * 100 : null;
     const gainLoss   = cur != null ? (cur * totalQty - totalCost) : null;
@@ -556,10 +656,10 @@ function applySort(arr) {
 // ─── Summary cards ────────────────────────────────────────────────────────────
 function summaryHtml(holdings, ccy) {
   const sym = ccySym[ccy] ?? ccy;
-  const cur = currentPrice(ccy);
   const totalInvested = holdings.reduce((s, h) => s + h.totalCost, 0);
-  const totalValue    = cur != null ? holdings.reduce((s, h) => s + (h.totalValue || 0), 0) : null;
-  const totalGain     = cur != null ? holdings.reduce((s, h) => s + (h.gainLoss  || 0), 0) : null;
+  const hasValue      = holdings.some(h => h.totalValue != null);
+  const totalValue    = hasValue ? holdings.reduce((s, h) => s + (h.totalValue ?? 0), 0) : null;
+  const totalGain     = hasValue ? holdings.reduce((s, h) => s + (h.gainLoss  ?? 0), 0) : null;
   const totalPct      = totalInvested > 0 && totalGain != null ? (totalGain / totalInvested) * 100 : null;
   const totalShares   = holdings.reduce((s, h) => s + h.totalQty, 0);
 
@@ -604,7 +704,7 @@ function holdingsTableHtml(holdings, ccy) {
       <td class="num">${h.totalValue != null ? sym+' '+fmt(h.totalValue) : '—'}</td>
       <td class="num">${pillHtml(h.pctChange)}</td>
       <td class="num">${h.gainLoss != null ? pillHtml(h.gainLoss, '') : '—'}</td>
-      <td class="num">${h.currentPrice != null ? renderPriceBadgeInline(ccy) : '—'}</td>
+      <td class="num">${h.currentPrice != null ? renderPriceBadgeInline(h.symbol) : '—'}</td>
       <td onclick="event.stopPropagation()" style="white-space:nowrap">
         <button class="btn btn-del  btn-sm" onclick="confirmDeleteHolding('${h.symbol}','${ccy}')">Delete</button>
       </td>
@@ -669,25 +769,29 @@ function renderAll() {
 let activeCcy = null;
 
 function expansionRowHtml(h, ccy) {
-  const sym = ccySym[ccy] ?? ccy;
-  const cur = currentPrice(ccy);
-  const sorted = [...h.rows].sort((a, b) => new Date(a.date) - new Date(b.date));
+  const sym    = ccySym[ccy] ?? ccy;
+  const cur    = currentPrice(h.symbol);
+  const sorted  = [...h.rows].sort((a, b) => new Date(a.date) - new Date(b.date));
   const colSpan = 9;
 
   const txRows = sorted.map(r => {
-    const diff    = cur != null ? cur - r.purchasePrice : null;
-    const diffPct = cur != null ? ((cur - r.purchasePrice) / r.purchasePrice) * 100 : null;
-    const txIdx   = rawRows.findIndex(rr =>
+    const diff      = cur != null ? cur - r.purchasePrice : null;
+    const diffPct   = cur != null ? ((cur - r.purchasePrice) / r.purchasePrice) * 100 : null;
+    const gainLoss  = diff != null ? diff * r.qty : null;
+    const txIdx     = rawRows.findIndex(rr =>
       rr[0].replace(/\s/g,'') === h.symbol && +rr[2] === r.qty &&
       +rr[3] === r.purchasePrice && rr[4] === r.date && (rr[5]??'EUR') === ccy
     );
+    const glColor = gainLoss == null ? '' : gainLoss >= 0 ? 'color:var(--green)' : 'color:var(--red)';
+    const glSign  = gainLoss != null && gainLoss > 0 ? '+' : '';
     return `<tr>
-      <td>${fmtDate(r.date)}</td>
+      <td class="date-cell">${fmtDate(r.date)}</td>
       <td class="num">${fmt(r.qty, 4)}</td>
       <td class="num">${sym} ${fmt(r.purchasePrice)}</td>
       <td class="num">${cur != null ? sym+' '+fmt(cur) : '—'}</td>
-      <td class="num">${diff != null ? pillHtml(diff, '') : '—'}</td>
+      <td class="num">${diff != null ? `<span style="${diff >= 0 ? 'color:var(--green)' : 'color:var(--red)'}">${diff >= 0 ? '+' : ''}${fmt(diff)}</span>` : '—'}</td>
       <td class="num">${pillHtml(diffPct)}</td>
+      <td class="num">${gainLoss != null ? `<span style="${glColor}">${glSign}${sym} ${fmt(gainLoss)}</span>` : '—'}</td>
       <td onclick="event.stopPropagation()" style="white-space:nowrap">
         <button class="btn btn-edit btn-sm" onclick="openEditTransaction(${txIdx})">Edit</button>
         <button class="btn btn-del  btn-sm" onclick="confirmDeleteTransaction(${txIdx})">Delete</button>
@@ -708,15 +812,16 @@ function expansionRowHtml(h, ccy) {
             Add Transaction
           </button>
         </div>
-        <table style="width:100%;border-collapse:collapse">
+        <table class="expansion-table">
           <thead>
-            <tr style="background:var(--surface)">
-              <th style="padding:8px 12px;text-align:left;color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em">Date</th>
-              <th style="padding:8px 12px;text-align:right;color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em">Quantity</th>
-              <th style="padding:8px 12px;text-align:right;color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em">Purchase Price</th>
-              <th style="padding:8px 12px;text-align:right;color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em">Current Price</th>
-              <th style="padding:8px 12px;text-align:right;color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em">Diff</th>
-              <th style="padding:8px 12px;text-align:right;color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em">Diff %</th>
+            <tr>
+              <th>Purchase Date</th>
+              <th class="num">Quantity</th>
+              <th class="num">Buy Price</th>
+              <th class="num">Current Price</th>
+              <th class="num">Price Diff</th>
+              <th class="num">Diff %</th>
+              <th class="num">Gain / Loss</th>
               <th></th>
             </tr>
           </thead>
@@ -1029,24 +1134,31 @@ async function init() {
   await loadData();
   renderAll();
 
+  // Resolve Yahoo tickers for all holdings, then fetch prices
+  await resolveAllTickers();
   await fetchAllPrices();
+  renderAll();
 
-  const eur = priceData('EUR');
-  if (eur) {
-    document.getElementById('sapPrice').textContent = `EUR ${fmt(eur.price)}`;
-    if (eur.chg != null) {
-      const sign = eur.chg >= 0 ? '+' : '';
-      const cls  = eur.chg >= 0 ? 'up' : 'dn';
-      document.getElementById('sapChg').innerHTML = `<span class="${cls}">${sign}${fmt(eur.chg)} (${sign}${fmt(eur.chgPct)}%)</span>`;
+  // Header badge — show price for first resolved holding
+  const firstSym = Object.keys(prices)[0];
+  const p = firstSym ? priceData(firstSym) : null;
+  if (p) {
+    const s = ccySym[p.currency] ?? p.currency;
+    document.getElementById('sapPrice').textContent = `${p.yfTicker ?? firstSym}  ${s} ${fmt(p.price)}`;
+    if (p.chg != null) {
+      const sign = p.chg >= 0 ? '+' : '';
+      const cls  = p.chg >= 0 ? 'up' : 'dn';
+      document.getElementById('sapChg').innerHTML = `<span class="${cls}">${sign}${fmt(p.chg)} (${sign}${fmt(p.chgPct)}%)</span>`;
     }
     document.getElementById('sapPriceBadge').style.display = '';
   }
 
-  const fetched = Object.keys(prices).join(', ') || 'none';
+  const tickerCount = Object.keys(prices).length;
   const src = useAPI ? ' · DB' : ' · offline';
   document.getElementById('priceStatus').textContent =
-    `Live: ${fetched}${src} · ${new Date().toLocaleTimeString()}`;
-  if (!Object.keys(prices).length) {
+    tickerCount ? `Live: ${tickerCount} ticker${tickerCount > 1 ? 's' : ''}${src} · ${new Date().toLocaleTimeString()}`
+                : 'Resolving tickers…';
+  if (!tickerCount) {
     document.getElementById('priceStatus').innerHTML = '<span style="color:var(--yellow)">Price fetch failed</span>';
   }
 
