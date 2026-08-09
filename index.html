@@ -144,34 +144,22 @@
   .pill-dn { background: rgba(239,68,68,0.15); color: var(--red); }
   .pill-zero { background: rgba(148,163,184,0.15); color: var(--text-muted); }
 
-  .detail-panel {
-    display: none;
-    margin-top: 4px;
+  /* ── Inline transaction expansion ── */
+  tr.active-row { background: rgba(79,142,247,0.1); border-left: 3px solid var(--accent); }
+  tr.expansion-row td { padding: 0; border-top: none; }
+  .expansion-inner {
+    background: var(--surface2);
+    border-top: 2px solid var(--accent);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 18px 18px;
   }
-  .detail-panel.visible { display: block; }
-  .detail-header {
+  .expansion-header {
     display: flex; align-items: center; justify-content: space-between;
-    margin-bottom: 12px;
+    margin-bottom: 10px;
   }
-  .detail-title { font-size: 15px; font-weight: 600; }
-  .detail-subtitle { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
-  .btn-close {
-    background: var(--surface2); border: 1px solid var(--border);
-    color: var(--text); border-radius: 6px; padding: 5px 12px;
-    cursor: pointer; font-size: 12px;
-  }
-  .btn-close:hover { background: var(--border); }
+  .expansion-title { font-size: 13px; font-weight: 600; color: var(--text); }
+  .expansion-subtitle { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 
-  .loading {
-    display: flex; align-items: center; gap: 8px;
-    color: var(--text-muted); font-size: 12px; padding: 8px 0;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  .spinner {
-    width: 14px; height: 14px; border: 2px solid var(--border);
-    border-top-color: var(--accent); border-radius: 50%;
-    animation: spin 0.7s linear infinite;
-  }
   .inline-price-badge {
     display: inline-flex; flex-direction: column; align-items: flex-end;
     gap: 2px; line-height: 1.2;
@@ -302,41 +290,6 @@
 <main id="sectionsRoot">
   <!-- Currency sections rendered dynamically by JS -->
 </main>
-
-<!-- Detail panel: lives outside sectionsRoot so renderAll() never destroys it -->
-<div class="detail-panel" id="detailPanel">
-    <div class="detail-header">
-      <div>
-        <div class="detail-title" id="detailTitle"></div>
-        <div class="detail-subtitle" id="detailSubtitle"></div>
-      </div>
-      <button class="btn-close" onclick="closeDetail()">✕ Close</button>
-    </div>
-    <div class="toolbar">
-      <button class="btn btn-add" id="detailAddBtn">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        Add Transaction
-      </button>
-    </div>
-    <div class="table-wrap">
-      <table id="detailTable">
-        <thead>
-          <tr>
-            <th>Symbol</th>
-            <th>Name</th>
-            <th>Purchase Date</th>
-            <th class="num">Quantity</th>
-            <th class="num">Purchase Price</th>
-            <th class="num">Current Price</th>
-            <th class="num">Diff</th>
-            <th class="num">Diff %</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody id="detailBody"></tbody>
-      </table>
-    </div>
-</div>
 
 <div class="toast hidden" id="toast"></div>
 
@@ -642,7 +595,7 @@ function holdingsTableHtml(holdings, ccy) {
   }
 
   const rows = applySort(holdings).map(h => {
-    const active = activeSymbol === h.symbol ? ' active-row' : '';
+    const active = activeSymbol === h.symbol && activeCcy === ccy ? ' active-row' : '';
     return `<tr class="${active}" onclick="toggleDetail('${h.symbol}','${ccy}')">
       <td class="symbol-cell">${h.symbol}</td>
       <td class="name-cell">${h.name}</td>
@@ -655,7 +608,8 @@ function holdingsTableHtml(holdings, ccy) {
       <td onclick="event.stopPropagation()" style="white-space:nowrap">
         <button class="btn btn-del  btn-sm" onclick="confirmDeleteHolding('${h.symbol}','${ccy}')">Delete</button>
       </td>
-    </tr>`;
+    </tr>
+    ${activeSymbol === h.symbol && activeCcy === ccy ? expansionRowHtml(h, ccy) : ''}`;
   }).join('');
 
   return toolbar + `<div class="table-wrap">
@@ -711,47 +665,23 @@ function renderAll() {
   });
 }
 
-// ─── Detail panel ─────────────────────────────────────────────────────────────
+// ─── Inline expansion row ─────────────────────────────────────────────────────
 let activeCcy = null;
 
-function toggleDetail(symbol, ccy) {
-  if (activeSymbol === symbol && activeCcy === ccy) {
-    activeSymbol = null; activeCcy = null;
-    document.getElementById('detailPanel').classList.remove('visible');
-    renderAll();
-    return;
-  }
-  activeSymbol = symbol; activeCcy = ccy;
-  renderAll();
-  renderDetail(symbol, ccy);
-}
-
-function renderDetail(symbol, ccy) {
-  const holdings = buildHoldings(rawRows, ccy);
-  const h = holdings.find(x => x.symbol === symbol);
-  if (!h) return;
+function expansionRowHtml(h, ccy) {
   const sym = ccySym[ccy] ?? ccy;
-
-  document.getElementById('detailTitle').textContent = `${h.symbol} — ${h.name}`;
-  document.getElementById('detailSubtitle').textContent = `${h.rows.length} purchase transaction${h.rows.length !== 1 ? 's' : ''}`;
-
   const cur = currentPrice(ccy);
   const sorted = [...h.rows].sort((a, b) => new Date(a.date) - new Date(b.date));
+  const colSpan = 9;
 
-  // Add button above the detail table
-  const addBtn = document.getElementById('detailAddBtn');
-  if (addBtn) addBtn.onclick = () => openAddTransaction(symbol, h.name, ccy);
-
-  document.getElementById('detailBody').innerHTML = sorted.map((r, i) => {
+  const txRows = sorted.map(r => {
     const diff    = cur != null ? cur - r.purchasePrice : null;
     const diffPct = cur != null ? ((cur - r.purchasePrice) / r.purchasePrice) * 100 : null;
     const txIdx   = rawRows.findIndex(rr =>
-      rr[0].replace(/\s/g,'') === symbol && +rr[2] === r.qty &&
+      rr[0].replace(/\s/g,'') === h.symbol && +rr[2] === r.qty &&
       +rr[3] === r.purchasePrice && rr[4] === r.date && (rr[5]??'EUR') === ccy
     );
     return `<tr>
-      <td class="symbol-cell">${r.symbol}</td>
-      <td class="name-cell">${r.name}</td>
       <td>${fmtDate(r.date)}</td>
       <td class="num">${fmt(r.qty, 4)}</td>
       <td class="num">${sym} ${fmt(r.purchasePrice)}</td>
@@ -765,14 +695,53 @@ function renderDetail(symbol, ccy) {
     </tr>`;
   }).join('');
 
-  const panel = document.getElementById('detailPanel');
-  panel.classList.add('visible');
-  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  return `<tr class="expansion-row">
+    <td colspan="${colSpan}" onclick="event.stopPropagation()">
+      <div class="expansion-inner">
+        <div class="expansion-header">
+          <div>
+            <div class="expansion-title">${h.symbol} — ${h.name}</div>
+            <div class="expansion-subtitle">${h.rows.length} purchase transaction${h.rows.length !== 1 ? 's' : ''}</div>
+          </div>
+          <button class="btn btn-add btn-sm" onclick="openAddTransaction('${h.symbol}','${h.name}','${ccy}')">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            Add Transaction
+          </button>
+        </div>
+        <table style="width:100%;border-collapse:collapse">
+          <thead>
+            <tr style="background:var(--surface)">
+              <th style="padding:8px 12px;text-align:left;color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em">Date</th>
+              <th style="padding:8px 12px;text-align:right;color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em">Quantity</th>
+              <th style="padding:8px 12px;text-align:right;color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em">Purchase Price</th>
+              <th style="padding:8px 12px;text-align:right;color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em">Current Price</th>
+              <th style="padding:8px 12px;text-align:right;color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em">Diff</th>
+              <th style="padding:8px 12px;text-align:right;color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em">Diff %</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>${txRows}</tbody>
+        </table>
+      </div>
+    </td>
+  </tr>`;
+}
+
+function toggleDetail(symbol, ccy) {
+  if (activeSymbol === symbol && activeCcy === ccy) {
+    activeSymbol = null; activeCcy = null;
+  } else {
+    activeSymbol = symbol; activeCcy = ccy;
+  }
+  renderAll();
+  if (activeSymbol) {
+    const activeRow = document.querySelector('tr.active-row');
+    if (activeRow) activeRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
 }
 
 function closeDetail() {
   activeSymbol = null; activeCcy = null;
-  document.getElementById('detailPanel').classList.remove('visible');
   renderAll();
 }
 
@@ -904,9 +873,7 @@ async function persistAndRefresh() {
     localStorage.setItem('stockPortfolioData', JSON.stringify(rawRows));
   }
   renderAll();
-  if (activeSymbol && activeCcy) {
-    renderDetail(activeSymbol, activeCcy);
-    // Scroll the highlighted row in the holdings table into view
+  if (activeSymbol) {
     const activeRow = document.querySelector('tr.active-row');
     if (activeRow) activeRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
