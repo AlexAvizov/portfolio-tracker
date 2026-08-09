@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.pyo
+portfolio.db
+.coverage
+coverage.xml
+*.db
