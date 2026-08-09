@@ -900,13 +900,17 @@ function getRowId(idx) {
 
 async function persistAndRefresh() {
   if (useAPI) {
-    // Re-load from DB to stay in sync (adds/edits/deletes already sent to API)
     await loadData();
   } else {
     localStorage.setItem('stockPortfolioData', JSON.stringify(rawRows));
   }
   renderAll();
-  if (activeSymbol && activeCcy) renderDetail(activeSymbol, activeCcy);
+  if (activeSymbol && activeCcy) {
+    renderDetail(activeSymbol, activeCcy);
+    // Scroll the highlighted row in the holdings table into view
+    const activeRow = document.querySelector('tr.active-row');
+    if (activeRow) activeRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
 }
 
 // ─── CRUD ─────────────────────────────────────────────────────────────────────

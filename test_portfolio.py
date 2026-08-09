@@ -335,6 +335,42 @@ class TestAPI(unittest.TestCase):
         _, rows = api("GET", "/api/transactions")
         self.assertEqual(len(rows), 100)
 
+    # ── Add Purchase: brand-new symbol ────────────────────────────────────────
+    def test_add_purchase_new_symbol_creates_first_transaction(self):
+        """Adding a brand-new symbol via Add Purchase saves it as a transaction."""
+        payload = {
+            "symbol": "NEWCO",
+            "name":   "New Corp",
+            "quantity": 5.0,
+            "purchase_price": 99.50,
+            "purchase_date": "2025-06-01",
+            "currency": "EUR",
+        }
+        status, row = api("POST", "/api/transactions", payload)
+        self.assertEqual(status, 201)
+        self.assertEqual(row["symbol"], "NEWCO")
+        self.assertAlmostEqual(row["quantity"], 5.0)
+        self.assertAlmostEqual(row["purchase_price"], 99.50)
+        self.assertEqual(row["currency"], "EUR")
+
+        # Verify it's the only transaction for this symbol
+        _, all_rows = api("GET", "/api/transactions")
+        newco = [r for r in all_rows if r["symbol"] == "NEWCO"]
+        self.assertEqual(len(newco), 1)
+
+    def test_add_purchase_new_symbol_then_second_transaction(self):
+        """A second purchase for the same symbol adds a second transaction row."""
+        base = {"symbol": "AAA", "name": "Alpha Corp", "quantity": 2.0,
+                "purchase_price": 50.0, "purchase_date": "2025-01-01", "currency": "USD"}
+        api("POST", "/api/transactions", base)
+        api("POST", "/api/transactions", {**base, "quantity": 3.0, "purchase_date": "2025-02-01"})
+
+        _, all_rows = api("GET", "/api/transactions")
+        aaa = [r for r in all_rows if r["symbol"] == "AAA"]
+        self.assertEqual(len(aaa), 2)
+        total_qty = sum(r["quantity"] for r in aaa)
+        self.assertAlmostEqual(total_qty, 5.0)
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # 3. UI Logic tests — test JS business logic via Python simulation
@@ -463,6 +499,24 @@ class TestBusinessLogic(unittest.TestCase):
         total_gain = sum(h["gainLoss"] for h in holdings)
         # 10 shares * (250-200) = 500
         self.assertAlmostEqual(total_gain, 500.0)
+
+    def test_new_symbol_appears_as_single_holding(self):
+        """A brand-new symbol added for the first time shows up as exactly one holding."""
+        rows = [["NEWCO", "New Corp", 3.0, 50.0, "2025-01-01", "EUR"]]
+        holdings = self.build_holdings(rows, "EUR")
+        self.assertEqual(len(holdings), 1)
+        self.assertEqual(holdings[0]["symbol"], "NEWCO")
+        self.assertAlmostEqual(holdings[0]["totalQty"], 3.0)
+        self.assertAlmostEqual(holdings[0]["totalCost"], 150.0)
+        self.assertAlmostEqual(holdings[0]["avgPrice"], 50.0)
+
+    def test_new_symbol_gain_loss_none_without_price(self):
+        """A brand-new symbol with no live price has null gain/loss."""
+        rows = [["NEWCO", "New Corp", 3.0, 50.0, "2025-01-01", "EUR"]]
+        h = self.build_holdings(rows, "EUR", current_price=None)[0]
+        self.assertIsNone(h["gainLoss"])
+        self.assertIsNone(h["pctChange"])
+        self.assertIsNone(h["totalValue"])
 
 
 # ═════════════════════════════════════════════════════════════════════════════
