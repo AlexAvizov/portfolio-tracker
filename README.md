@@ -1,17 +1,19 @@
-# 📈 Portfolio Tracker
+# Portfolio Tracker
 
 A personal stock portfolio tracker built as a single-page web app with an optional local backend server and SQLite database.
 
 ## Features
 
 - **Three currency sections** — EUR, USD, and ILS, each with its own summary and holdings table
-- **Live market prices** — SAP stock price fetched from Alpha Vantage (Xetra EUR via `SAP.DEX`, NYSE USD via `SAP`)
+- **Live market prices** — per-symbol prices fetched from Yahoo Finance, with automatic ticker resolution
 - **Per-holding summary** — Total Invested, Current Value, Total Gain/Loss, Overall Return %, Total Shares
-- **Transaction drill-down** — click any holding row to expand all individual purchase lots
+- **Transaction drill-down** — click any holding row to expand all individual purchase lots inline
 - **Full CRUD** — add, edit, and delete holdings and individual transactions via modal forms
-- **Excel import** — upload a `.xlsx` file in the same format to replace the portfolio data
+- **Excel import** — upload a `.xlsx` file to replace the portfolio data
 - **SQLite database** — when the local server is running, all data persists in `portfolio.db`
 - **Offline fallback** — works without the server using browser `localStorage`
+
+---
 
 ## Quick Start
 
@@ -31,19 +33,138 @@ python3 stock-server.py
 
 Then open **http://localhost:8765** in your browser.
 
-Data is persisted in `portfolio.db` (SQLite) in the same directory. The status bar in the app shows `· DB` when connected to the server, or `· offline` when using localStorage.
+Data is persisted in `portfolio.db` (SQLite). The status bar shows `· DB` when connected, or `· offline` when using localStorage.
 
-## Project Structure
+---
 
+## Component Diagram
+
+```mermaid
+graph TB
+    subgraph Browser["Browser (index.html)"]
+        UI["UI Layer<br/>renderAll · summaryHtml<br/>holdingsTableHtml · expansionRowHtml"]
+        State["App State<br/>rawRows · prices · tickerMap<br/>activeSymbol · activeCcy"]
+        DataLayer["Data Layer<br/>loadData · persistAndRefresh<br/>saveTransaction"]
+        PriceFetch["Price Layer<br/>resolveAllTickers · fetchAllPrices<br/>searchTicker · fetchYahooQuote"]
+        LS["localStorage<br/>stockPortfolioData<br/>yfTickerMap"]
+    end
+
+    subgraph Server["Python Server (stock-server.py)"]
+        API["REST API Handler<br/>GET/POST/PUT/DELETE /api/transactions<br/>POST /api/transactions/import"]
+        PriceProxy["Price Proxy<br/>GET /api/price?symbols=<br/>GET /api/ticker-search?q=&currency="]
+        Cache["In-Memory Cache<br/>_price_cache TTL 60s<br/>_ticker_cache TTL 3600s"]
+        DB[("SQLite<br/>portfolio.db")]
+    end
+
+    subgraph External["External Services"]
+        YFSearch["Yahoo Finance Search<br/>query1.finance.yahoo.com<br/>/v1/finance/search"]
+        YFChart["Yahoo Finance Chart<br/>query1.finance.yahoo.com<br/>/v8/finance/chart"]
+        SheetJS["SheetJS CDN<br/>xlsx.full.min.js"]
+    end
+
+    UI --> State
+    DataLayer --> State
+    PriceFetch --> State
+    DataLayer -->|API mode| API
+    DataLayer -->|offline| LS
+    PriceFetch -->|server proxy| PriceProxy
+    PriceFetch -->|direct fallback| YFSearch
+    PriceFetch -->|direct fallback| YFChart
+    API --> DB
+    PriceProxy --> Cache
+    Cache -->|miss| YFSearch
+    Cache -->|miss| YFChart
+    UI -->|Excel upload| SheetJS
 ```
-portfolio-tracker/
-├── index.html        # Single-page app (HTML + CSS + JS)
-├── stock-server.py   # Local Python server: REST API + price proxy
-├── portfolio.db      # SQLite database (auto-created on first run)
-└── README.md
+
+---
+
+## Page Load & Price Flow
+
+```mermaid
+sequenceDiagram
+    participant Browser
+    participant Server as Python Server
+    participant DB as SQLite DB
+    participant YF as Yahoo Finance
+
+    Browser->>Server: GET /api/transactions
+    Server->>DB: SELECT * FROM transactions
+    DB-->>Server: rows[]
+    Server-->>Browser: transactions JSON
+    Browser->>Browser: renderAll() — first paint (no prices)
+
+    loop For each new symbol
+        Browser->>Server: GET /api/ticker-search?q=SAP+AG&currency=EUR
+        Server->>YF: /v1/finance/search?q=SAP&quotesCount=8
+        YF-->>Server: quotes[] with exchanges
+        Server-->>Browser: { ticker: "SAP.DE" }
+        Browser->>Browser: save to localStorage[yfTickerMap]
+    end
+
+    Browser->>Server: GET /api/price?symbols=SAP.DE,SAP,...
+    Server->>YF: /v8/finance/chart/SAP.DE?interval=1d&range=1d
+    YF-->>Server: regularMarketPrice, chartPreviousClose
+    Server-->>Browser: { "SAP.DE": { price, chg, chgPct, ... } }
+
+    Browser->>Browser: renderAll() — final paint with live prices
+    Browser->>Browser: update header badge
 ```
 
-## REST API (when server is running)
+---
+
+## CRUD Flow
+
+```mermaid
+flowchart TD
+    A([User clicks Add Purchase]) --> B[openAddHolding / openAddTransaction]
+    B --> C[Modal opens — user fills form]
+    C --> D{Validate fields}
+    D -- invalid --> E[showToast warning]
+    E --> C
+    D -- valid --> F{useAPI?}
+    F -- yes, new --> G[POST /api/transactions]
+    F -- yes, edit --> H[PUT /api/transactions/:id]
+    F -- no --> I[Update rawRows in memory]
+    G --> J[closeModal]
+    H --> J
+    I --> J
+    J --> K[persistAndRefresh]
+    K -- API mode --> L[GET /api/transactions — reload from DB]
+    K -- offline --> M[localStorage.setItem]
+    L --> N[renderAll — UI reflects new state]
+    M --> N
+```
+
+---
+
+## Data Model
+
+### `transactions` table (SQLite)
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | INTEGER | Primary key, auto-increment |
+| `symbol` | TEXT | Internal symbol, e.g. `50724` |
+| `name` | TEXT | Display name, e.g. `SAP AG-SPONSORE` |
+| `quantity` | REAL | Number of shares |
+| `purchase_price` | REAL | Price per share at purchase |
+| `purchase_date` | TEXT | ISO date `YYYY-MM-DD` |
+| `currency` | TEXT | `EUR` / `USD` / `ILS`, default `EUR` |
+| `created_at` | TEXT | Server timestamp on insert |
+| `updated_at` | TEXT | Server timestamp on update |
+
+### In-memory structures (client)
+
+| Variable | Shape | Purpose |
+|----------|-------|---------|
+| `rawRows` | `[symbol, name, qty, price, date, ccy][]` | All transactions |
+| `prices` | `{ internalSymbol: { price, chg, chgPct, yfTicker, currency } }` | Live quotes keyed by internal symbol |
+| `tickerMap` | `{ internalSymbol: { ticker, name, resolvedAt } }` | Persisted in `localStorage` |
+
+---
+
+## REST API
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -52,7 +173,9 @@ portfolio-tracker/
 | `PUT` | `/api/transactions/:id` | Update a transaction |
 | `DELETE` | `/api/transactions/:id` | Delete a transaction |
 | `POST` | `/api/transactions/import` | Bulk replace all transactions |
-| `GET` | `/api/price` | Live SAP price (EUR + USD) |
+| `GET` | `/api/ticker-search?q=&currency=` | Resolve stock name to Yahoo ticker |
+| `GET` | `/api/price?symbols=A,B` | Live quotes keyed by ticker |
+| `GET` | `/` | Serve `index.html` |
 
 ### Transaction object
 
@@ -70,26 +193,22 @@ portfolio-tracker/
 }
 ```
 
+---
+
 ## Excel Upload Format
 
-The app expects a sheet named `clean-table` (falls back to the first sheet) with the following columns:
+The app expects a sheet named `clean-table` (falls back to the first sheet):
 
 | Stock Symbol | Stock Name | Quantity | Purchase Price | Purchase Date | Currency |
 |---|---|---|---|---|---|
 | 50724 | SAP AG-SPONSORE | 5.25 | 174.56 | 2024-03-06 | EUR |
 
-The `Currency` column is optional and defaults to `EUR` if omitted. Valid values: `EUR`, `USD`, `ILS`.
+`Currency` is optional and defaults to `EUR`. Valid values: `EUR`, `USD`, `ILS`.
 
-## Live Price Source
-
-Prices are fetched from [Alpha Vantage](https://www.alphavantage.co/) (free tier, 25 requests/day).
-
-- **EUR** — `SAP.DEX` (Xetra)
-- **USD** — `SAP` (NYSE)
-- **ILS** — no live price available; cost basis is shown
+---
 
 ## Requirements
 
 - A modern web browser (Chrome, Firefox, Safari, Edge)
-- Python 3.6+ (only needed for the local server / database mode)
-- No external Python dependencies — uses only the standard library (`sqlite3`, `http.server`, `urllib`)
+- Python 3.6+ (only needed for server / database mode)
+- No external Python dependencies — stdlib only (`sqlite3`, `http.server`, `urllib`, `gzip`, `threading`)
