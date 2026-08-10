@@ -21,23 +21,20 @@ jobs:
       - name: Install dependencies
         run: pip install coverage
 
-      - name: Run tests with coverage
+      - name: Run tests
         env:
           PYTHONIOENCODING: utf-8
           PYTHONUNBUFFERED: "1"
-        shell: bash
+        run: python3 test_portfolio.py -v
+
+      - name: Run coverage
         run: |
-          set -o pipefail
-          python3 -m coverage run test_portfolio.py -v 2>&1 | tee test_output.txt
-          echo "### Test Output" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          cat test_output.txt >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          python3 -m coverage run test_portfolio.py
+          python3 -m coverage report --include="stock-server.py"
+          python3 -m coverage xml --include="stock-server.py" -o coverage.xml
 
       - name: Coverage summary
         run: |
-          python3 -m coverage report --include="stock-server.py"
-          python3 -m coverage xml --include="stock-server.py" -o coverage.xml
           TOTAL=$(python3 -m coverage report --include="stock-server.py" --format=total)
           echo "### Test Coverage" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
