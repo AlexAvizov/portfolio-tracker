@@ -25,15 +25,29 @@ jobs:
         env:
           PYTHONIOENCODING: utf-8
           PYTHONUNBUFFERED: "1"
-        run: python3 test_portfolio.py -v
+        shell: bash
+        run: |
+          python3 test_portfolio.py -v > test_output.txt 2>&1
+          TEST_EXIT=$?
+          cat test_output.txt
+          exit $TEST_EXIT
+
+      - name: Upload test output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-output
+          path: test_output.txt
 
       - name: Run coverage
+        if: success()
         run: |
           python3 -m coverage run test_portfolio.py
           python3 -m coverage report --include="stock-server.py"
           python3 -m coverage xml --include="stock-server.py" -o coverage.xml
 
       - name: Coverage summary
+        if: success()
         run: |
           TOTAL=$(python3 -m coverage report --include="stock-server.py" --format=total)
           echo "### Test Coverage" >> $GITHUB_STEP_SUMMARY
@@ -51,6 +65,7 @@ jobs:
           echo "**Server code coverage: ${TOTAL}%**" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload coverage report
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
