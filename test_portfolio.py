@@ -160,8 +160,24 @@ class TestAPI(unittest.TestCase):
             os.remove(srv.DB_PATH)
 
     def setUp(self):
-        """Wipe DB between tests."""
+        """Wipe DB and block live network calls between tests."""
         srv.db_clear()
+        with srv._price_lock:
+            srv._price_cache.clear()
+            srv._ticker_cache.clear()
+        _real_urlopen = srv.urllib.request.urlopen
+        def _block_yahoo(req, *args, **kwargs):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            if "yahoo.com" in url:
+                raise Exception("Live Yahoo calls blocked in tests — pre-seed the cache")
+            return _real_urlopen(req, *args, **kwargs)
+        self._urlopen_patcher = unittest.mock.patch.object(
+            srv.urllib.request, "urlopen", side_effect=_block_yahoo
+        )
+        self._urlopen_patcher.start()
+
+    def tearDown(self):
+        self._urlopen_patcher.stop()
 
     # ── GET /api/transactions ─────────────────────────────────────────────────
     def test_get_transactions_empty(self):
@@ -615,9 +631,23 @@ class TestTickerAPI(unittest.TestCase):
             os.remove(srv.DB_PATH)
 
     def setUp(self):
+        # Block all live Yahoo Finance calls — every test must pre-seed the cache
+        _real_urlopen = srv.urllib.request.urlopen
+        def _block_yahoo(req, *args, **kwargs):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            if "yahoo.com" in url:
+                raise Exception("Live Yahoo calls blocked in tests — pre-seed the cache")
+            return _real_urlopen(req, *args, **kwargs)
+        self._urlopen_patcher = unittest.mock.patch.object(
+            srv.urllib.request, "urlopen", side_effect=_block_yahoo
+        )
+        self._urlopen_patcher.start()
         with srv._price_lock:
             srv._ticker_cache.clear()
             srv._price_cache.clear()
+
+    def tearDown(self):
+        self._urlopen_patcher.stop()
 
     def _api(self, path):
         url = f"http://localhost:{TICKER_PORT}{path}"
@@ -707,6 +737,22 @@ class TestEdgeCases(unittest.TestCase):
 
     def setUp(self):
         srv.db_clear()
+        with srv._price_lock:
+            srv._price_cache.clear()
+            srv._ticker_cache.clear()
+        _real_urlopen = srv.urllib.request.urlopen
+        def _block_yahoo(req, *args, **kwargs):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            if "yahoo.com" in url:
+                raise Exception("Live Yahoo calls blocked in tests — pre-seed the cache")
+            return _real_urlopen(req, *args, **kwargs)
+        self._urlopen_patcher = unittest.mock.patch.object(
+            srv.urllib.request, "urlopen", side_effect=_block_yahoo
+        )
+        self._urlopen_patcher.start()
+
+    def tearDown(self):
+        self._urlopen_patcher.stop()
 
     def _api(self, method, path, body=None):
         """api() helper pointed at EDGE_PORT."""

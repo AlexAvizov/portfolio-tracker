@@ -23,7 +23,7 @@ jobs:
 
       - name: Run tests with coverage
         run: |
-          python3 -m coverage run test_portfolio.py
+          python3 -m coverage run test_portfolio.py -v
           python3 -m coverage report --include="stock-server.py"
           python3 -m coverage xml --include="stock-server.py" -o coverage.xml
 
