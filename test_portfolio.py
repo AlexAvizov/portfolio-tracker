@@ -22,7 +22,7 @@ import http.server as _hs
 srv.http = type("_http", (), {"server": _hs})()   # expose http.server on the module
 srv.PORT    = 18765          # use a separate port so we don't clash with the real server
 
-BASE = f"http://localhost:{srv.PORT}"
+BASE = f"http://127.0.0.1:{srv.PORT}"
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -148,7 +148,7 @@ class TestAPI(unittest.TestCase):
         srv.DB_PATH = tempfile.mktemp(suffix=".db")
         srv.init_db()
         srv.http.server.ThreadingHTTPServer.allow_reuse_address = True
-        cls.server = srv.http.server.ThreadingHTTPServer(("", srv.PORT), srv.Handler)
+        cls.server = srv.http.server.ThreadingHTTPServer(("127.0.0.1", srv.PORT), srv.Handler)
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
         time.sleep(0.3)
@@ -619,7 +619,7 @@ class TestTickerAPI(unittest.TestCase):
         srv.DB_PATH = tempfile.mktemp(suffix=".db")
         srv.init_db()
         srv.http.server.ThreadingHTTPServer.allow_reuse_address = True
-        cls.server = srv.http.server.ThreadingHTTPServer(("", TICKER_PORT), srv.Handler)
+        cls.server = srv.http.server.ThreadingHTTPServer(("127.0.0.1", TICKER_PORT), srv.Handler)
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
         time.sleep(0.3)
@@ -650,7 +650,7 @@ class TestTickerAPI(unittest.TestCase):
         self._urlopen_patcher.stop()
 
     def _api(self, path):
-        url = f"http://localhost:{TICKER_PORT}{path}"
+        url = f"http://127.0.0.1:{TICKER_PORT}{path}"
         req = urllib.request.Request(url)
         try:
             with urllib.request.urlopen(req, timeout=5) as r:
@@ -724,7 +724,7 @@ class TestEdgeCases(unittest.TestCase):
         srv.DB_PATH = tempfile.mktemp(suffix=".db")
         srv.init_db()
         srv.http.server.ThreadingHTTPServer.allow_reuse_address = True
-        cls.server = srv.http.server.ThreadingHTTPServer(("", EDGE_PORT), srv.Handler)
+        cls.server = srv.http.server.ThreadingHTTPServer(("127.0.0.1", EDGE_PORT), srv.Handler)
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
         time.sleep(0.3)
@@ -756,7 +756,7 @@ class TestEdgeCases(unittest.TestCase):
 
     def _api(self, method, path, body=None):
         """api() helper pointed at EDGE_PORT."""
-        url  = f"http://localhost:{EDGE_PORT}{path}"
+        url  = f"http://127.0.0.1:{EDGE_PORT}{path}"
         data = json.dumps(body).encode() if body is not None else None
         req  = urllib.request.Request(url, data=data, method=method,
                                       headers={"Content-Type": "application/json"} if data else {})
