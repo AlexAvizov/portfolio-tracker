@@ -25,14 +25,14 @@ jobs:
         env:
           PYTHONIOENCODING: utf-8
           PYTHONUNBUFFERED: "1"
+        shell: bash
         run: |
+          set -o pipefail
           python3 -m coverage run test_portfolio.py -v 2>&1 | tee test_output.txt
-          STATUS=${PIPESTATUS[0]}
           echo "### Test Output" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           cat test_output.txt >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          exit $STATUS
 
       - name: Coverage summary
         run: |
