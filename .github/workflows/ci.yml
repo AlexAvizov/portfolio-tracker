@@ -22,13 +22,22 @@ jobs:
         run: pip install coverage
 
       - name: Run tests with coverage
+        env:
+          PYTHONIOENCODING: utf-8
+          PYTHONUNBUFFERED: "1"
         run: |
-          python3 -m coverage run test_portfolio.py -v
-          python3 -m coverage report --include="stock-server.py"
-          python3 -m coverage xml --include="stock-server.py" -o coverage.xml
+          python3 -m coverage run test_portfolio.py -v 2>&1 | tee test_output.txt
+          STATUS=${PIPESTATUS[0]}
+          echo "### Test Output" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat test_output.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          exit $STATUS
 
       - name: Coverage summary
         run: |
+          python3 -m coverage report --include="stock-server.py"
+          python3 -m coverage xml --include="stock-server.py" -o coverage.xml
           TOTAL=$(python3 -m coverage report --include="stock-server.py" --format=total)
           echo "### Test Coverage" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -36,9 +45,11 @@ jobs:
           echo "|---|---|" >> $GITHUB_STEP_SUMMARY
           echo "| Unit (DB layer) | 12 |" >> $GITHUB_STEP_SUMMARY
           echo "| Integration (API) | 20 |" >> $GITHUB_STEP_SUMMARY
-          echo "| Business Logic | 11 |" >> $GITHUB_STEP_SUMMARY
+          echo "| Business Logic | 13 |" >> $GITHUB_STEP_SUMMARY
+          echo "| Ticker Search | 4 |" >> $GITHUB_STEP_SUMMARY
+          echo "| Ticker API | 6 |" >> $GITHUB_STEP_SUMMARY
           echo "| Edge / Regression | 5 |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Total** | **48** |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Total** | **64** |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Server code coverage: ${TOTAL}%**" >> $GITHUB_STEP_SUMMARY
 
