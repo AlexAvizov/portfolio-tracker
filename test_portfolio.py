@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Comprehensive test suite for Portfolio Tracker
-Tests: API endpoints, DB operations, price fetching, UI behaviour (via HTTP)
+Tests: API endpoints, DB operations, price fetching, auth
 
 Run:  python3 test_portfolio.py
       python3 test_portfolio.py -v   (verbose)
@@ -24,18 +24,57 @@ srv.PORT    = 18765          # use a separate port so we don't clash with the re
 
 BASE = f"http://127.0.0.1:{srv.PORT}"
 
+# ── Global session cookie — set by each test class's setUpClass ───────────────
+_session_cookie = None
+
 
 # ── helpers ───────────────────────────────────────────────────────────────────
-def api(method, path, body=None, expect=200):
-    url  = BASE + path
+def api(method, path, body=None, port=None):
+    base = f"http://127.0.0.1:{port}" if port else BASE
+    url  = base + path
     data = json.dumps(body).encode() if body is not None else None
-    req  = urllib.request.Request(url, data=data, method=method,
-                                  headers={"Content-Type": "application/json"} if data else {})
+    headers = {}
+    if data:
+        headers["Content-Type"] = "application/json"
+    if _session_cookie:
+        headers["Cookie"] = f"session={_session_cookie}"
+    req  = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=5) as r:
             return r.status, json.loads(r.read())
     except urllib.error.HTTPError as e:
         return e.code, json.loads(e.read())
+
+
+def _raw_api(port, method, path, body=None, cookie=None):
+    """API call without the global session cookie (for auth setup)."""
+    url = f"http://127.0.0.1:{port}{path}"
+    data = json.dumps(body).encode() if body is not None else None
+    headers = {}
+    if data:
+        headers["Content-Type"] = "application/json"
+    if cookie:
+        headers["Cookie"] = f"session={cookie}"
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.status, json.loads(r.read()), r.headers
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read()), e.headers
+
+
+def _setup_auth(port):
+    """Register testuser, login, return (user_id, session_token)."""
+    _raw_api(port, "POST", "/api/register", {"username": "testuser", "password": "testpass"})
+    status, body, headers = _raw_api(port, "POST", "/api/login",
+                                     {"username": "testuser", "password": "testpass"})
+    token = ""
+    sc = headers.get("Set-Cookie", "")
+    for part in sc.split(";"):
+        if part.strip().startswith("session="):
+            token = part.strip()[len("session="):]
+            break
+    return body["id"], token
 
 
 TX_FIXTURE = {
@@ -63,56 +102,56 @@ class TestDatabase(unittest.TestCase):
 
     # ── init ─────────────────────────────────────────────────────────────────
     def test_init_creates_table(self):
-        rows = srv.db_get_all()
+        rows = srv.db_get_all(1)
         self.assertIsInstance(rows, list)
         self.assertEqual(len(rows), 0)
 
     # ── insert ───────────────────────────────────────────────────────────────
     def test_insert_returns_row_with_id(self):
-        row = srv.db_insert("SAP", "SAP SE", 5.0, 170.0, "2025-06-01", "EUR")
+        row = srv.db_insert(1, "SAP", "SAP SE", 5.0, 170.0, "2025-06-01", "EUR")
         self.assertIn("id", row)
         self.assertEqual(row["symbol"], "SAP")
         self.assertEqual(row["currency"], "EUR")
 
     def test_insert_multiple_rows(self):
-        srv.db_insert("A", "Alpha", 1.0, 10.0, "2025-01-01", "USD")
-        srv.db_insert("B", "Beta",  2.0, 20.0, "2025-01-02", "EUR")
-        rows = srv.db_get_all()
+        srv.db_insert(1, "A", "Alpha", 1.0, 10.0, "2025-01-01", "USD")
+        srv.db_insert(1, "B", "Beta",  2.0, 20.0, "2025-01-02", "EUR")
+        rows = srv.db_get_all(1)
         self.assertEqual(len(rows), 2)
 
     def test_insert_preserves_floats(self):
-        row = srv.db_insert("X", "X Corp", 3.1415, 99.99, "2025-03-14", "ILS")
+        row = srv.db_insert(1, "X", "X Corp", 3.1415, 99.99, "2025-03-14", "ILS")
         self.assertAlmostEqual(row["quantity"],       3.1415, places=4)
         self.assertAlmostEqual(row["purchase_price"], 99.99,  places=2)
 
     # ── get_all ───────────────────────────────────────────────────────────────
     def test_get_all_ordered_by_date(self):
-        srv.db_insert("Z", "Z", 1, 1, "2025-12-01", "EUR")
-        srv.db_insert("A", "A", 1, 1, "2025-01-01", "EUR")
-        rows = srv.db_get_all()
+        srv.db_insert(1, "Z", "Z", 1, 1, "2025-12-01", "EUR")
+        srv.db_insert(1, "A", "A", 1, 1, "2025-01-01", "EUR")
+        rows = srv.db_get_all(1)
         self.assertLessEqual(rows[0]["purchase_date"], rows[1]["purchase_date"])
 
     # ── update ───────────────────────────────────────────────────────────────
     def test_update_existing_row(self):
-        row = srv.db_insert("OLD", "Old Name", 1.0, 50.0, "2025-01-01", "EUR")
-        updated = srv.db_update(row["id"], "NEW", "New Name", 2.0, 75.0, "2025-06-01", "USD")
+        row = srv.db_insert(1, "OLD", "Old Name", 1.0, 50.0, "2025-01-01", "EUR")
+        updated = srv.db_update(1, row["id"], "NEW", "New Name", 2.0, 75.0, "2025-06-01", "USD")
         self.assertEqual(updated["symbol"], "NEW")
         self.assertEqual(updated["currency"], "USD")
         self.assertAlmostEqual(updated["quantity"], 2.0)
 
     def test_update_nonexistent_returns_none(self):
-        result = srv.db_update(99999, "X", "X", 1, 1, "2025-01-01", "EUR")
+        result = srv.db_update(1, 99999, "X", "X", 1, 1, "2025-01-01", "EUR")
         self.assertIsNone(result)
 
     # ── delete ────────────────────────────────────────────────────────────────
     def test_delete_existing_row(self):
-        row = srv.db_insert("DEL", "Del Corp", 1.0, 10.0, "2025-01-01", "EUR")
-        result = srv.db_delete(row["id"])
+        row = srv.db_insert(1, "DEL", "Del Corp", 1.0, 10.0, "2025-01-01", "EUR")
+        result = srv.db_delete(1, row["id"])
         self.assertTrue(result)
-        self.assertEqual(len(srv.db_get_all()), 0)
+        self.assertEqual(len(srv.db_get_all(1)), 0)
 
     def test_delete_nonexistent_returns_false(self):
-        result = srv.db_delete(99999)
+        result = srv.db_delete(1, 99999)
         self.assertFalse(result)
 
     # ── bulk insert ───────────────────────────────────────────────────────────
@@ -122,19 +161,19 @@ class TestDatabase(unittest.TestCase):
             ["SAP", "SAP SE", 3.0, 180.0, "2025-02-01", "EUR"],
             ["AAPL", "Apple", 2.0, 190.0, "2025-03-01", "USD"],
         ]
-        srv.db_bulk_insert(rows)
-        all_rows = srv.db_get_all()
+        srv.db_bulk_insert(1, rows)
+        all_rows = srv.db_get_all(1)
         self.assertEqual(len(all_rows), 3)
 
     def test_bulk_insert_defaults_currency_to_eur(self):
-        srv.db_bulk_insert([["X", "X", 1, 1, "2025-01-01"]])  # no currency
-        rows = srv.db_get_all()
+        srv.db_bulk_insert(1, [["X", "X", 1, 1, "2025-01-01"]])  # no currency
+        rows = srv.db_get_all(1)
         self.assertEqual(rows[0]["currency"], "EUR")
 
     def test_bulk_insert_then_clear(self):
-        srv.db_bulk_insert([["X", "X", 1, 1, "2025-01-01", "EUR"]])
-        srv.db_clear()
-        self.assertEqual(len(srv.db_get_all()), 0)
+        srv.db_bulk_insert(1, [["X", "X", 1, 1, "2025-01-01", "EUR"]])
+        srv.db_clear(1)
+        self.assertEqual(len(srv.db_get_all(1)), 0)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -142,9 +181,13 @@ class TestDatabase(unittest.TestCase):
 # ═════════════════════════════════════════════════════════════════════════════
 class TestAPI(unittest.TestCase):
 
+    _user_id = None
+    _cookie  = None
+
     @classmethod
     def setUpClass(cls):
         """Start a test server instance on port 18765."""
+        global _session_cookie
         srv.DB_PATH = tempfile.mktemp(suffix=".db")
         srv.init_db()
         srv.http.server.ThreadingHTTPServer.allow_reuse_address = True
@@ -153,9 +196,13 @@ class TestAPI(unittest.TestCase):
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
         time.sleep(0.3)
+        cls._user_id, cls._cookie = _setup_auth(srv.PORT)
+        _session_cookie = cls._cookie
 
     @classmethod
     def tearDownClass(cls):
+        global _session_cookie
+        _session_cookie = None
         cls.server.shutdown()
         if os.path.exists(srv.DB_PATH):
             os.remove(srv.DB_PATH)
@@ -187,8 +234,9 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(body, [])
 
     def test_get_transactions_returns_list(self):
-        srv.db_insert(TX_FIXTURE["symbol"], TX_FIXTURE["name"], TX_FIXTURE["quantity"],
-                      TX_FIXTURE["purchase_price"], TX_FIXTURE["purchase_date"], TX_FIXTURE["currency"])
+        srv.db_insert(self.__class__._user_id, TX_FIXTURE["symbol"], TX_FIXTURE["name"],
+                      TX_FIXTURE["quantity"], TX_FIXTURE["purchase_price"],
+                      TX_FIXTURE["purchase_date"], TX_FIXTURE["currency"])
         status, body = api("GET", "/api/transactions")
         self.assertEqual(status, 200)
         self.assertEqual(len(body), 1)
@@ -265,7 +313,8 @@ class TestAPI(unittest.TestCase):
 
     # ── CORS headers ──────────────────────────────────────────────────────────
     def test_cors_header_on_get(self):
-        req = urllib.request.Request(BASE + "/api/transactions")
+        headers = {"Cookie": f"session={self.__class__._cookie}"}
+        req = urllib.request.Request(BASE + "/api/transactions", headers=headers)
         with urllib.request.urlopen(req) as r:
             self.assertEqual(r.headers.get("Access-Control-Allow-Origin"), "*")
 
@@ -293,31 +342,25 @@ class TestAPI(unittest.TestCase):
 
     # ── full CRUD round-trip ──────────────────────────────────────────────────
     def test_full_crud_lifecycle(self):
-        # Create
         status, row = api("POST", "/api/transactions", TX_FIXTURE)
         self.assertEqual(status, 201)
         tx_id = row["id"]
 
-        # Read
         status, rows = api("GET", "/api/transactions")
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["id"], tx_id)
 
-        # Update
         status, updated = api("PUT", f"/api/transactions/{tx_id}",
                               {**TX_FIXTURE, "quantity": 50.0, "purchase_price": 200.0})
         self.assertEqual(status, 200)
         self.assertAlmostEqual(updated["quantity"], 50.0)
 
-        # Verify update persisted
         _, rows = api("GET", "/api/transactions")
         self.assertAlmostEqual(rows[0]["quantity"], 50.0)
 
-        # Delete
         status, _ = api("DELETE", f"/api/transactions/{tx_id}")
         self.assertEqual(status, 200)
 
-        # Verify gone
         _, rows = api("GET", "/api/transactions")
         self.assertEqual(len(rows), 0)
 
@@ -374,7 +417,6 @@ class TestAPI(unittest.TestCase):
         self.assertAlmostEqual(row["purchase_price"], 99.50)
         self.assertEqual(row["currency"], "EUR")
 
-        # Verify it's the only transaction for this symbol
         _, all_rows = api("GET", "/api/transactions")
         newco = [r for r in all_rows if r["symbol"] == "NEWCO"]
         self.assertEqual(len(newco), 1)
@@ -397,15 +439,8 @@ class TestAPI(unittest.TestCase):
 # 3. UI Logic tests — test JS business logic via Python simulation
 # ═════════════════════════════════════════════════════════════════════════════
 class TestBusinessLogic(unittest.TestCase):
-    """
-    Tests the financial calculations that mirror the JS functions in index.html.
-    Keeps them independent of a browser so they run in CI.
-    """
 
     def build_holdings(self, rows, ccy, prices_by_symbol=None):
-        """Python mirror of buildHoldings() in index.html.
-        prices_by_symbol: dict keyed by internal symbol, e.g. {"SAP": 150.0}
-        """
         from collections import defaultdict
         if prices_by_symbol is None:
             prices_by_symbol = {}
@@ -430,14 +465,13 @@ class TestBusinessLogic(unittest.TestCase):
                             "pctChange": pct_change, "gainLoss": gain_loss})
         return result
 
-    # ── cost calculations ─────────────────────────────────────────────────────
     def test_total_cost_is_sum_of_lot_costs(self):
         rows = [
             ["SAP", "SAP SE", 5.0, 100.0, "2025-01-01", "EUR"],
             ["SAP", "SAP SE", 3.0, 200.0, "2025-02-01", "EUR"],
         ]
         h = self.build_holdings(rows, "EUR")[0]
-        self.assertAlmostEqual(h["totalCost"], 5*100 + 3*200)  # 1100
+        self.assertAlmostEqual(h["totalCost"], 5*100 + 3*200)
 
     def test_avg_price_weighted_correctly(self):
         rows = [
@@ -445,7 +479,7 @@ class TestBusinessLogic(unittest.TestCase):
             ["SAP", "SAP SE", 5.0, 200.0, "2025-02-01", "EUR"],
         ]
         h = self.build_holdings(rows, "EUR")[0]
-        self.assertAlmostEqual(h["avgPrice"], 150.0)  # (500+1000)/10
+        self.assertAlmostEqual(h["avgPrice"], 150.0)
 
     def test_total_qty_summed(self):
         rows = [["SAP","SAP SE", 3.14, 100.0, "2025-01-01", "EUR"],
@@ -453,11 +487,10 @@ class TestBusinessLogic(unittest.TestCase):
         h = self.build_holdings(rows, "EUR")[0]
         self.assertAlmostEqual(h["totalQty"], 6.0, places=4)
 
-    # ── gain / loss ───────────────────────────────────────────────────────────
     def test_gain_when_price_rises(self):
         rows = [["SAP","SAP SE", 10.0, 100.0, "2025-01-01", "EUR"]]
         h = self.build_holdings(rows, "EUR", prices_by_symbol={"SAP": 150.0})[0]
-        self.assertAlmostEqual(h["gainLoss"],  500.0)   # 10*(150-100)
+        self.assertAlmostEqual(h["gainLoss"],  500.0)
         self.assertAlmostEqual(h["pctChange"],  50.0)
 
     def test_loss_when_price_falls(self):
@@ -472,7 +505,6 @@ class TestBusinessLogic(unittest.TestCase):
         self.assertIsNone(h["gainLoss"])
         self.assertIsNone(h["pctChange"])
 
-    # ── currency separation ───────────────────────────────────────────────────
     def test_eur_rows_excluded_from_usd_section(self):
         rows = [
             ["SAP","SAP SE", 5.0, 100.0, "2025-01-01", "EUR"],
@@ -490,7 +522,6 @@ class TestBusinessLogic(unittest.TestCase):
         ils = self.build_holdings(rows, "ILS")
         self.assertEqual(len(ils), 0)
 
-    # ── multiple symbols ──────────────────────────────────────────────────────
     def test_two_symbols_aggregated_separately(self):
         rows = [
             ["AAA","Alpha", 10.0, 50.0, "2025-01-01", "USD"],
@@ -502,10 +533,8 @@ class TestBusinessLogic(unittest.TestCase):
         self.assertIn("AAA", syms); self.assertIn("BBB", syms)
         self.assertAlmostEqual(syms["AAA"]["totalQty"],  15.0)
         self.assertAlmostEqual(syms["BBB"]["totalQty"],   5.0)
-        # AAA avg = (10*50 + 5*60) / 15 = 800/15
         self.assertAlmostEqual(syms["AAA"]["avgPrice"], 800/15, places=5)
 
-    # ── summary totals ────────────────────────────────────────────────────────
     def test_portfolio_total_invested(self):
         rows = [
             ["SAP","SAP SE", 5.0, 200.0, "2025-01-01", "EUR"],
@@ -513,7 +542,7 @@ class TestBusinessLogic(unittest.TestCase):
         ]
         holdings = self.build_holdings(rows, "EUR")
         total_invested = sum(h["totalCost"] for h in holdings)
-        self.assertAlmostEqual(total_invested, 5*200 + 3*150)  # 1450
+        self.assertAlmostEqual(total_invested, 5*200 + 3*150)
 
     def test_portfolio_total_gain_with_price(self):
         rows = [
@@ -522,7 +551,6 @@ class TestBusinessLogic(unittest.TestCase):
         ]
         holdings = self.build_holdings(rows, "EUR", prices_by_symbol={"SAP": 250.0})
         total_gain = sum(h["gainLoss"] for h in holdings)
-        # 10 shares * (250-200) = 500
         self.assertAlmostEqual(total_gain, 500.0)
 
     def test_new_symbol_appears_as_single_holding(self):
@@ -543,7 +571,6 @@ class TestBusinessLogic(unittest.TestCase):
         self.assertIsNone(h["pctChange"])
         self.assertIsNone(h["totalValue"])
 
-    # ── per-symbol independent prices ─────────────────────────────────────────
     def test_two_symbols_independent_prices(self):
         """Each symbol uses its own price independently."""
         rows = [
@@ -573,12 +600,10 @@ class TestBusinessLogic(unittest.TestCase):
 class TestTickerSearch(unittest.TestCase):
 
     def setUp(self):
-        # Clear ticker cache before each test
         with srv._price_lock:
             srv._ticker_cache.clear()
 
     def _mock_search(self, quotes):
-        """Return a urlopen context manager that yields fake Yahoo search JSON."""
         import io
         body = json.dumps({"quotes": quotes}).encode()
         class FakeResp:
@@ -604,8 +629,8 @@ class TestTickerSearch(unittest.TestCase):
         with unittest.mock.patch.object(srv.urllib.request, "urlopen",
                                  return_value=self._mock_search([{"symbol": "SAP.DE"}])) as m:
             srv.fetch_yahoo_search("SAP AG")
-            srv.fetch_yahoo_search("SAP AG")   # second call — should hit cache
-            self.assertEqual(m.call_count, 1)  # urlopen called only once
+            srv.fetch_yahoo_search("SAP AG")
+            self.assertEqual(m.call_count, 1)
 
     def test_returns_none_on_network_error(self):
         with unittest.mock.patch.object(srv.urllib.request, "urlopen", side_effect=Exception("timeout")):
@@ -619,8 +644,13 @@ class TestTickerSearch(unittest.TestCase):
 TICKER_PORT = 18767
 
 class TestTickerAPI(unittest.TestCase):
+
+    _user_id = None
+    _cookie  = None
+
     @classmethod
     def setUpClass(cls):
+        global _session_cookie
         srv.DB_PATH = tempfile.mktemp(suffix=".db")
         srv.init_db()
         srv.http.server.ThreadingHTTPServer.allow_reuse_address = True
@@ -628,15 +658,18 @@ class TestTickerAPI(unittest.TestCase):
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
         time.sleep(0.3)
+        cls._user_id, cls._cookie = _setup_auth(TICKER_PORT)
+        _session_cookie = cls._cookie
 
     @classmethod
     def tearDownClass(cls):
+        global _session_cookie
+        _session_cookie = None
         cls.server.shutdown()
         if os.path.exists(srv.DB_PATH):
             os.remove(srv.DB_PATH)
 
     def setUp(self):
-        # Block all live Yahoo Finance calls — every test must pre-seed the cache
         _real_urlopen = srv.urllib.request.urlopen
         def _block_yahoo(req, *args, **kwargs):
             url = req.full_url if hasattr(req, "full_url") else str(req)
@@ -656,7 +689,10 @@ class TestTickerAPI(unittest.TestCase):
 
     def _api(self, path):
         url = f"http://127.0.0.1:{TICKER_PORT}{path}"
-        req = urllib.request.Request(url)
+        headers = {}
+        if self.__class__._cookie:
+            headers["Cookie"] = f"session={self.__class__._cookie}"
+        req = urllib.request.Request(url, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=5) as r:
                 return r.status, json.loads(r.read())
@@ -670,7 +706,6 @@ class TestTickerAPI(unittest.TestCase):
         self.assertIn("error", body)
 
     def test_ticker_search_returns_ticker(self):
-        # Pre-seed cache with EUR-aware key (query is cleaned to "sap" from "SAP AG")
         with srv._price_lock:
             srv._ticker_cache["sap|EUR"] = {"data": "SAP.DE", "ts": time.time()}
         status, body = self._api("/api/ticker-search?q=SAP+AG&currency=EUR")
@@ -708,7 +743,6 @@ class TestTickerAPI(unittest.TestCase):
         self.assertIn("USD", body)
 
     def test_price_symbols_capped_at_20(self):
-        # Seed 25 tickers; only first 20 should appear in response
         for i in range(25):
             self._seed_price(f"T{i}", price=10.0 + i, prev=9.0 + i)
         symbols = ",".join([f"T{i}" for i in range(25)])
@@ -718,14 +752,187 @@ class TestTickerAPI(unittest.TestCase):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# 6. Authentication tests
+# ═════════════════════════════════════════════════════════════════════════════
+AUTH_PORT = 18768
+
+class TestAuth(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        srv.http.server.ThreadingHTTPServer.allow_reuse_address = True
+        cls._db_path = tempfile.mktemp(suffix=".db")
+        srv.DB_PATH = cls._db_path
+        srv.init_db()
+        cls.server = srv.http.server.ThreadingHTTPServer(("127.0.0.1", AUTH_PORT), srv.Handler)
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+        time.sleep(0.3)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        if os.path.exists(cls._db_path):
+            os.remove(cls._db_path)
+
+    def setUp(self):
+        # Reset auth state between tests
+        srv.DB_PATH = self.__class__._db_path
+        with srv.get_conn() as conn:
+            conn.execute("DELETE FROM sessions")
+            conn.execute("DELETE FROM users")
+            conn.execute("DELETE FROM transactions")
+            conn.commit()
+
+    def _api(self, method, path, body=None, cookie=None):
+        status, data, headers = _raw_api(AUTH_PORT, method, path, body=body, cookie=cookie)
+        return status, data, headers
+
+    def _extract_cookie(self, headers):
+        sc = headers.get("Set-Cookie", "")
+        for part in sc.split(";"):
+            if part.strip().startswith("session="):
+                return part.strip()[len("session="):]
+        return None
+
+    # ── /api/me ───────────────────────────────────────────────────────────────
+    def test_me_returns_setup_when_no_users(self):
+        status, body, _ = self._api("GET", "/api/me")
+        self.assertEqual(status, 200)
+        self.assertTrue(body.get("setup"))
+
+    def test_me_returns_401_when_users_exist_but_no_session(self):
+        srv.register_user("alice", "secret")
+        status, body, _ = self._api("GET", "/api/me")
+        self.assertEqual(status, 401)
+
+    def test_me_returns_user_when_authenticated(self):
+        srv.register_user("alice", "secret")
+        _, login_body, headers = self._api("POST", "/api/login", {"username": "alice", "password": "secret"})
+        cookie = self._extract_cookie(headers)
+        status, body, _ = self._api("GET", "/api/me", cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["username"], "alice")
+
+    # ── /api/register ─────────────────────────────────────────────────────────
+    def test_register_first_user_succeeds(self):
+        status, body, _ = self._api("POST", "/api/register",
+                                    {"username": "alice", "password": "secret"})
+        self.assertEqual(status, 201)
+        self.assertEqual(body["username"], "alice")
+        self.assertIn("id", body)
+
+    def test_register_duplicate_username_fails(self):
+        # Register alice (no auth needed — first user)
+        self._api("POST", "/api/register", {"username": "alice", "password": "secret"})
+        # Login to get a session cookie
+        _, _, h = self._api("POST", "/api/login", {"username": "alice", "password": "secret"})
+        cookie = self._extract_cookie(h)
+        # Try to register alice again WITH auth — should be 400 (duplicate), not 401
+        status, body, _ = _raw_api(AUTH_PORT, "POST", "/api/register",
+                                   {"username": "alice", "password": "other"}, cookie=cookie)
+        self.assertEqual(status, 400)
+        self.assertIn("error", body)
+
+    def test_register_missing_fields_returns_400(self):
+        status, body, _ = self._api("POST", "/api/register", {"username": "alice"})
+        self.assertEqual(status, 400)
+
+    def test_register_second_user_requires_auth(self):
+        # First user exists — registering a second without auth should be rejected
+        srv.register_user("alice", "secret")
+        status, body, _ = self._api("POST", "/api/register",
+                                    {"username": "bob", "password": "pass"})
+        self.assertEqual(status, 401)
+
+    # ── /api/login ────────────────────────────────────────────────────────────
+    def test_login_correct_credentials_sets_cookie(self):
+        srv.register_user("alice", "secret")
+        status, body, headers = self._api("POST", "/api/login",
+                                          {"username": "alice", "password": "secret"})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["username"], "alice")
+        cookie = self._extract_cookie(headers)
+        self.assertIsNotNone(cookie)
+        self.assertTrue(len(cookie) > 10)
+
+    def test_login_wrong_password_returns_401(self):
+        srv.register_user("alice", "secret")
+        status, body, _ = self._api("POST", "/api/login",
+                                    {"username": "alice", "password": "wrong"})
+        self.assertEqual(status, 401)
+
+    def test_login_nonexistent_user_returns_401(self):
+        status, body, _ = self._api("POST", "/api/login",
+                                    {"username": "nobody", "password": "pass"})
+        self.assertEqual(status, 401)
+
+    # ── /api/logout ───────────────────────────────────────────────────────────
+    def test_logout_clears_session(self):
+        srv.register_user("alice", "secret")
+        _, _, headers = self._api("POST", "/api/login", {"username": "alice", "password": "secret"})
+        cookie = self._extract_cookie(headers)
+        self._api("POST", "/api/logout", cookie=cookie)
+        status, _, _ = self._api("GET", "/api/me", cookie=cookie)
+        self.assertEqual(status, 401)
+
+    # ── protected endpoints ───────────────────────────────────────────────────
+    def test_transactions_requires_auth(self):
+        srv.register_user("alice", "secret")
+        status, body, _ = self._api("GET", "/api/transactions")
+        self.assertEqual(status, 401)
+
+    def test_transactions_accessible_with_valid_session(self):
+        srv.register_user("alice", "secret")
+        _, _, headers = self._api("POST", "/api/login", {"username": "alice", "password": "secret"})
+        cookie = self._extract_cookie(headers)
+        status, body, _ = self._api("GET", "/api/transactions", cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertEqual(body, [])
+
+    # ── data isolation ────────────────────────────────────────────────────────
+    def test_user_data_isolation(self):
+        """User A's transactions are invisible to user B."""
+        # Register and login as Alice
+        srv.register_user("alice", "pass")
+        _, _, h_a = self._api("POST", "/api/login", {"username": "alice", "password": "pass"})
+        cookie_a = self._extract_cookie(h_a)
+
+        # Alice creates a transaction
+        self._api("POST", "/api/transactions", TX_FIXTURE, cookie=cookie_a)
+
+        # Register and login as Bob
+        _, _, h_admin = self._api("POST", "/api/login", {"username": "alice", "password": "pass"})
+        cookie_admin = self._extract_cookie(h_admin)
+        self._api("POST", "/api/register", {"username": "bob", "password": "pass"},
+                  cookie=cookie_admin)
+        _, _, h_b = self._api("POST", "/api/login", {"username": "bob", "password": "pass"})
+        cookie_b = self._extract_cookie(h_b)
+
+        # Bob should see zero transactions
+        status, rows, _ = self._api("GET", "/api/transactions", cookie=cookie_b)
+        self.assertEqual(status, 200)
+        self.assertEqual(len(rows), 0)
+
+        # Alice still sees her transaction
+        status, rows, _ = self._api("GET", "/api/transactions", cookie=cookie_a)
+        self.assertEqual(status, 200)
+        self.assertEqual(len(rows), 1)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # 7. Edge-case / regression tests
 # ═════════════════════════════════════════════════════════════════════════════
 EDGE_PORT = 18766
 
 class TestEdgeCases(unittest.TestCase):
-    # uses a separate port so it doesn't race with TestAPI's teardown releasing 18765
+
+    _user_id = None
+    _cookie  = None
+
     @classmethod
     def setUpClass(cls):
+        global _session_cookie
         srv.DB_PATH = tempfile.mktemp(suffix=".db")
         srv.init_db()
         srv.http.server.ThreadingHTTPServer.allow_reuse_address = True
@@ -733,9 +940,13 @@ class TestEdgeCases(unittest.TestCase):
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
         time.sleep(0.3)
+        cls._user_id, cls._cookie = _setup_auth(EDGE_PORT)
+        _session_cookie = cls._cookie
 
     @classmethod
     def tearDownClass(cls):
+        global _session_cookie
+        _session_cookie = None
         cls.server.shutdown()
         if os.path.exists(srv.DB_PATH):
             os.remove(srv.DB_PATH)
@@ -760,11 +971,14 @@ class TestEdgeCases(unittest.TestCase):
         self._urlopen_patcher.stop()
 
     def _api(self, method, path, body=None):
-        """api() helper pointed at EDGE_PORT."""
         url  = f"http://127.0.0.1:{EDGE_PORT}{path}"
         data = json.dumps(body).encode() if body is not None else None
-        req  = urllib.request.Request(url, data=data, method=method,
-                                      headers={"Content-Type": "application/json"} if data else {})
+        headers = {}
+        if data:
+            headers["Content-Type"] = "application/json"
+        if self.__class__._cookie:
+            headers["Cookie"] = f"session={self.__class__._cookie}"
+        req  = urllib.request.Request(url, data=data, method=method, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=5) as r:
                 return r.status, json.loads(r.read())
@@ -813,14 +1027,14 @@ class TestEdgeCases(unittest.TestCase):
 
 # ─── runner ───────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    # Pretty header
     print("\n" + "═"*60)
     print("  Portfolio Tracker — Test Suite")
     print("═"*60 + "\n")
 
     loader = unittest.TestLoader()
     suite  = unittest.TestSuite()
-    for cls in [TestDatabase, TestAPI, TestBusinessLogic, TestTickerSearch, TestTickerAPI, TestEdgeCases]:
+    for cls in [TestDatabase, TestAPI, TestBusinessLogic, TestTickerSearch,
+                TestTickerAPI, TestAuth, TestEdgeCases]:
         suite.addTests(loader.loadTestsFromTestCase(cls))
 
     verbosity = 2 if "-v" in sys.argv else 1

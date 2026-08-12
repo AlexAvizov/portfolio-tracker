@@ -331,9 +331,65 @@
     .summary-bar { grid-template-columns: 1fr 1fr; }
     .form-grid { grid-template-columns: 1fr; }
   }
+
+  /* ── Login / Register overlay ── */
+  #loginOverlay {
+    position: fixed; inset: 0; z-index: 2000;
+    background: var(--bg);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #loginOverlay.hidden { display: none; }
+  .auth-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 16px; padding: 40px 44px;
+    width: 100%; max-width: 400px;
+    box-shadow: 0 12px 48px rgba(0,0,0,0.6);
+  }
+  .auth-logo {
+    font-size: 24px; font-weight: 700; text-align: center; margin-bottom: 6px;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .auth-subtitle { text-align: center; color: var(--text-muted); font-size: 13px; margin-bottom: 26px; }
+  .auth-form { display: flex; flex-direction: column; gap: 12px; }
+  .auth-form input {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 14px;
+    color: var(--text); font-size: 14px; outline: none; width: 100%;
+  }
+  .auth-form input:focus { border-color: var(--accent); }
+  .auth-submit {
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    color: #fff; border: none; border-radius: 8px;
+    padding: 11px; font-size: 14px; font-weight: 600;
+    cursor: pointer; width: 100%; margin-top: 4px; transition: opacity 0.15s;
+  }
+  .auth-submit:hover { opacity: 0.88; }
+  .auth-error { color: var(--red); font-size: 12px; text-align: center; min-height: 18px; }
+  .auth-toggle { text-align: center; margin-top: 18px; font-size: 12px; color: var(--text-muted); }
+  .auth-toggle a { color: var(--accent); cursor: pointer; }
+  .auth-toggle a:hover { text-decoration: underline; }
+  #logoutBtn { background: var(--surface2); border: 1px solid var(--border); color: var(--text-muted); }
+  #logoutBtn:hover { opacity: 0.85; }
 </style>
 </head>
 <body>
+
+<div id="loginOverlay">
+  <div class="auth-card">
+    <div class="auth-logo">📈 Portfolio Tracker</div>
+    <div class="auth-subtitle" id="authSubtitle">Sign in to your account</div>
+    <form class="auth-form" onsubmit="return false">
+      <input id="authUsername" type="text" placeholder="Username" autocomplete="username">
+      <input id="authPassword" type="password" placeholder="Password" autocomplete="current-password">
+      <div class="auth-error" id="authError"></div>
+      <button class="auth-submit" id="authSubmitBtn" onclick="handleAuthSubmit()">Sign In</button>
+    </form>
+    <div class="auth-toggle" id="authToggle">
+      Don't have an account? <a onclick="setAuthMode('register')">Register</a>
+    </div>
+  </div>
+</div>
 
 <header>
   <div class="header-left">
@@ -346,6 +402,8 @@
   </div>
   <div class="header-right">
     <span class="price-status" id="priceStatus">Fetching live price…</span>
+    <span class="price-status" id="currentUserDisplay" style="color:var(--text)"></span>
+    <button id="logoutBtn" class="btn-upload" onclick="doLogout()" style="display:none">Logout</button>
     <label class="btn-upload" for="fileUpload">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
       Upload Excel
@@ -1036,6 +1094,7 @@ let useAPI = false;  // set to true once server responds
 async function loadData() {
   try {
     const r = await fetch('http://localhost:8765/api/transactions', { signal: AbortSignal.timeout(3000) });
+    if (r.status === 401) { await checkAuth(); return; }
     if (r.ok) {
       useAPI = true;
       const rows = await r.json();
@@ -1236,8 +1295,93 @@ function closeConfirm() {
 document.getElementById('txModal').addEventListener('click', e => { if (e.target === e.currentTarget) closeModal(); });
 document.getElementById('confirmModal').addEventListener('click', e => { if (e.target === e.currentTarget) closeConfirm(); });
 
+// ─── Auth ─────────────────────────────────────────────────────────────────────
+let currentUser = null;
+let _authMode   = 'login';
+
+function setAuthMode(mode) {
+  _authMode = mode;
+  const reg = mode === 'register';
+  document.getElementById('authSubtitle').textContent    = reg ? 'Create your account' : 'Sign in to your account';
+  document.getElementById('authSubmitBtn').textContent   = reg ? 'Register' : 'Sign In';
+  document.getElementById('authToggle').innerHTML        = reg
+    ? 'Already have an account? <a onclick="setAuthMode(\'login\')">Sign In</a>'
+    : 'Don\'t have an account? <a onclick="setAuthMode(\'register\')">Register</a>';
+  document.getElementById('authError').textContent  = '';
+  document.getElementById('authPassword').value     = '';
+}
+
+async function checkAuth() {
+  try {
+    const r = await fetch('/api/me', { signal: AbortSignal.timeout(3000) });
+    const d = await r.json();
+    if (d.setup) {
+      setAuthMode('register');
+      document.getElementById('authToggle').style.display = 'none';
+      document.getElementById('loginOverlay').classList.remove('hidden');
+      return false;
+    }
+    if (r.ok && d.username) {
+      currentUser = d;
+      document.getElementById('loginOverlay').classList.add('hidden');
+      document.getElementById('currentUserDisplay').textContent = d.username;
+      document.getElementById('logoutBtn').style.display = '';
+      return true;
+    }
+  } catch(e) {}
+  setAuthMode('login');
+  document.getElementById('authToggle').style.display = '';
+  document.getElementById('loginOverlay').classList.remove('hidden');
+  return false;
+}
+
+async function handleAuthSubmit() {
+  const username = document.getElementById('authUsername').value.trim();
+  const password = document.getElementById('authPassword').value;
+  const errEl    = document.getElementById('authError');
+  errEl.textContent = '';
+  if (!username || !password) { errEl.textContent = 'Username and password are required.'; return; }
+  if (_authMode === 'register') await doRegister(username, password);
+  else                          await doLogin(username, password);
+}
+
+async function doLogin(username, password) {
+  const errEl = document.getElementById('authError');
+  try {
+    const r = await fetch('/api/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    if (r.ok) { await init(); }
+    else       { errEl.textContent = 'Invalid username or password.'; }
+  } catch(e)   { errEl.textContent = 'Could not connect to server.'; }
+}
+
+async function doRegister(username, password) {
+  const errEl = document.getElementById('authError');
+  try {
+    const r = await fetch('/api/register', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    if (r.status === 201) { await doLogin(username, password); }
+    else { const d = await r.json(); errEl.textContent = d.error || 'Registration failed.'; }
+  } catch(e) { errEl.textContent = 'Could not connect to server.'; }
+}
+
+async function doLogout() {
+  try { await fetch('/api/logout', { method: 'POST' }); } catch(e) {}
+  currentUser = null;
+  document.getElementById('currentUserDisplay').textContent = '';
+  document.getElementById('logoutBtn').style.display = 'none';
+  await checkAuth();
+}
+
 // ─── Init ─────────────────────────────────────────────────────────────────────
 async function init() {
+  const authed = await checkAuth();
+  if (!authed) return;
+
   await loadData();
   renderAll();
 

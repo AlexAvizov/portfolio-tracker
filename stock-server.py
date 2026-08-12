@@ -5,11 +5,13 @@ Stock Portfolio Tracker — local server
   • SQLite database for transaction persistence
   • REST API for CRUD operations
   • Proxies live SAP stock price from Yahoo Finance
+  • Username/password authentication with cookie sessions
 
 Run:  python3 stock-server.py
 Open: http://localhost:8765
 """
 import http.server, urllib.request, urllib.parse, json, os, gzip, threading, time, sqlite3, re
+import hashlib, secrets
 
 PORT    = 8765
 DIR     = os.path.dirname(os.path.abspath(__file__))
@@ -34,70 +36,167 @@ def init_db():
                 purchase_price REAL   NOT NULL,
                 purchase_date TEXT    NOT NULL,
                 currency      TEXT    NOT NULL DEFAULT 'EUR',
+                user_id       INTEGER,
                 created_at    TEXT    NOT NULL DEFAULT (datetime('now')),
                 updated_at    TEXT    NOT NULL DEFAULT (datetime('now'))
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                username      TEXT    NOT NULL UNIQUE,
+                salt          TEXT    NOT NULL,
+                password_hash TEXT    NOT NULL,
+                created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                token      TEXT    PRIMARY KEY,
+                user_id    INTEGER NOT NULL REFERENCES users(id),
+                created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        # migrate: add user_id column to existing transactions tables
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(transactions)")]
+        if "user_id" not in cols:
+            conn.execute("ALTER TABLE transactions ADD COLUMN user_id INTEGER")
+            conn.execute("UPDATE transactions SET user_id = 1 WHERE user_id IS NULL")
         conn.commit()
     print(f"  [db] Database ready → {DB_PATH}")
 
-def db_get_all():
+# ─── Auth ─────────────────────────────────────────────────────────────────────
+
+def hash_password(pw):
+    salt = secrets.token_hex(16)
+    h = hashlib.pbkdf2_hmac("sha256", pw.encode(), salt.encode(), 260_000).hex()
+    return salt, h
+
+def verify_password(pw, salt, stored_hash):
+    return hashlib.pbkdf2_hmac("sha256", pw.encode(), salt.encode(), 260_000).hex() == stored_hash
+
+def create_session(user_id):
+    token = secrets.token_urlsafe(32)
+    with _db_lock:
+        with get_conn() as conn:
+            conn.execute("INSERT INTO sessions (token, user_id) VALUES (?,?)", (token, user_id))
+            conn.commit()
+    return token
+
+def get_session_user(token):
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT u.id, u.username FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=?",
+            (token,)
+        ).fetchone()
+    return dict(row) if row else None
+
+def delete_session(token):
+    with _db_lock:
+        with get_conn() as conn:
+            conn.execute("DELETE FROM sessions WHERE token=?", (token,))
+            conn.commit()
+
+def users_exist():
+    with get_conn() as conn:
+        return conn.execute("SELECT 1 FROM users LIMIT 1").fetchone() is not None
+
+def register_user(username, password):
+    """Returns user dict on success, raises ValueError on duplicate."""
+    salt, h = hash_password(password)
+    with _db_lock:
+        with get_conn() as conn:
+            try:
+                cur = conn.execute(
+                    "INSERT INTO users (username, salt, password_hash) VALUES (?,?,?)",
+                    (username, salt, h)
+                )
+                conn.commit()
+                row = conn.execute("SELECT id, username FROM users WHERE id=?", (cur.lastrowid,)).fetchone()
+                return dict(row)
+            except sqlite3.IntegrityError:
+                raise ValueError(f"Username '{username}' already exists")
+
+def login_user(username, password):
+    """Returns user dict on success, None on bad credentials."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT id, username, salt, password_hash FROM users WHERE username=?", (username,)
+        ).fetchone()
+    if not row:
+        return None
+    if not verify_password(password, row["salt"], row["password_hash"]):
+        return None
+    return {"id": row["id"], "username": row["username"]}
+
+# ─── Transactions DB ──────────────────────────────────────────────────────────
+
+def db_get_all(user_id):
     with _db_lock:
         with get_conn() as conn:
             rows = conn.execute(
-                "SELECT * FROM transactions ORDER BY purchase_date ASC, id ASC"
+                "SELECT * FROM transactions WHERE user_id=? ORDER BY purchase_date ASC, id ASC",
+                (user_id,)
             ).fetchall()
     return [dict(r) for r in rows]
 
-def db_insert(symbol, name, qty, price, date, ccy):
+def db_insert(user_id, symbol, name, qty, price, date, ccy):
     with _db_lock:
         with get_conn() as conn:
             cur = conn.execute(
-                """INSERT INTO transactions (symbol, name, quantity, purchase_price, purchase_date, currency)
-                   VALUES (?,?,?,?,?,?)""",
-                (symbol, name, qty, price, date, ccy)
+                """INSERT INTO transactions (symbol, name, quantity, purchase_price, purchase_date, currency, user_id)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (symbol, name, qty, price, date, ccy, user_id)
             )
             conn.commit()
             row = conn.execute("SELECT * FROM transactions WHERE id=?", (cur.lastrowid,)).fetchone()
     return dict(row)
 
-def db_update(tx_id, symbol, name, qty, price, date, ccy):
+def db_update(user_id, tx_id, symbol, name, qty, price, date, ccy):
     with _db_lock:
         with get_conn() as conn:
             conn.execute(
                 """UPDATE transactions
                    SET symbol=?, name=?, quantity=?, purchase_price=?, purchase_date=?,
                        currency=?, updated_at=datetime('now')
-                   WHERE id=?""",
-                (symbol, name, qty, price, date, ccy, tx_id)
+                   WHERE id=? AND user_id=?""",
+                (symbol, name, qty, price, date, ccy, tx_id, user_id)
             )
             conn.commit()
-            row = conn.execute("SELECT * FROM transactions WHERE id=?", (tx_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM transactions WHERE id=? AND user_id=?", (tx_id, user_id)
+            ).fetchone()
     return dict(row) if row else None
 
-def db_delete(tx_id):
+def db_delete(user_id, tx_id):
     with _db_lock:
         with get_conn() as conn:
-            affected = conn.execute("DELETE FROM transactions WHERE id=?", (tx_id,)).rowcount
+            affected = conn.execute(
+                "DELETE FROM transactions WHERE id=? AND user_id=?", (tx_id, user_id)
+            ).rowcount
             conn.commit()
     return affected > 0
 
-def db_bulk_insert(rows):
+def db_bulk_insert(user_id, rows):
     """rows: list of [symbol, name, qty, price, date, ccy]"""
     with _db_lock:
         with get_conn() as conn:
             conn.executemany(
-                """INSERT INTO transactions (symbol, name, quantity, purchase_price, purchase_date, currency)
-                   VALUES (?,?,?,?,?,?)""",
-                [(r[0], r[1], float(r[2]), float(r[3]), r[4], r[5] if len(r) > 5 else 'EUR')
+                """INSERT INTO transactions (symbol, name, quantity, purchase_price, purchase_date, currency, user_id)
+                   VALUES (?,?,?,?,?,?,?)""",
+                [(r[0], r[1], float(r[2]), float(r[3]), r[4],
+                  r[5] if len(r) > 5 else 'EUR', user_id)
                  for r in rows]
             )
             conn.commit()
 
-def db_clear():
+def db_clear(user_id=None):
     with _db_lock:
         with get_conn() as conn:
-            conn.execute("DELETE FROM transactions")
+            if user_id is not None:
+                conn.execute("DELETE FROM transactions WHERE user_id=?", (user_id,))
+            else:
+                conn.execute("DELETE FROM transactions")
             conn.commit()
 
 # ─── Price & ticker fetching ───────────────────────────────────────────────────
@@ -144,11 +243,8 @@ def fetch_yahoo_quote(yf_symbol, currency=None):
 def _clean_stock_name(name):
     """Strip custodian/fund suffixes and corporate entity words to get a Yahoo-searchable name."""
     import re
-    # Remove trailing custodian/product suffixes after hyphen (e.g. -SPONSORE, -ADR)
     name = re.sub(r'\s*[-–]\s*\S.*$', '', name)
-    # Remove trailing parenthetical (e.g. (ADR))
     name = re.sub(r'\s*\(.*?\)\s*$', '', name)
-    # Remove trailing corporate entity words that confuse Yahoo
     name = re.sub(r'\s+\b(AG|SE|SA|NV|PLC|LTD|LLC|INC|CORP|GmbH|KGaA)\b\.?\s*$', '', name, flags=re.I)
     return name.strip()
 
@@ -160,7 +256,6 @@ def fetch_yahoo_search(query, currency=None):
         if cached and time.time() - cached["ts"] < TICKER_CACHE_TTL:
             return cached["data"]
 
-    # Exchanges preferred per currency
     EUR_EXCHANGES = {"GER", "FRA", "VIE", "MIL", "AMS", "PAR", "MCE", "BRU", "LIS", "HEL"}
     USD_EXCHANGES = {"NYQ", "NAS", "PCX", "ASE"}
 
@@ -213,6 +308,32 @@ class Handler(http.server.BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         return json.loads(self.rfile.read(length)) if length else {}
 
+    def _session_token(self):
+        cookie = self.headers.get("Cookie", "")
+        for part in cookie.split(";"):
+            k, _, v = part.strip().partition("=")
+            if k.strip() == "session":
+                return v.strip()
+        return None
+
+    def _get_user(self):
+        """Returns user dict {id, username} or None."""
+        token = self._session_token()
+        return get_session_user(token) if token else None
+
+    def _require_auth(self):
+        """Returns user dict or sends 401 and returns None."""
+        user = self._get_user()
+        if user is None:
+            self.json_response({"error": "unauthorized"}, 401)
+        return user
+
+    def _set_session_cookie(self, token):
+        self.send_header("Set-Cookie", f"session={token}; HttpOnly; SameSite=Strict; Path=/")
+
+    def _clear_session_cookie(self):
+        self.send_header("Set-Cookie", "session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0")
+
     def do_OPTIONS(self):
         self.send_response(204)
         self.cors_headers()
@@ -222,13 +343,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
 
-        # /api/transactions — list all
-        if path == "/api/transactions":
-            self.json_response(db_get_all())
+        # /api/me — current user info (public endpoint, returns setup/401/user)
+        if path == "/api/me":
+            if not users_exist():
+                self.json_response({"setup": True})
+                return
+            user = self._get_user()
+            if user is None:
+                self.json_response({"error": "unauthorized"}, 401)
+                return
+            self.json_response({"id": user["id"], "username": user["username"]})
             return
 
-        # /api/ticker-search?q=<name>&currency=EUR — resolve stock name to Yahoo ticker
+        # /api/transactions — list all
+        if path == "/api/transactions":
+            user = self._require_auth()
+            if user is None: return
+            self.json_response(db_get_all(user["id"]))
+            return
+
+        # /api/ticker-search?q=<name>&currency=EUR
         if path == "/api/ticker-search":
+            user = self._require_auth()
+            if user is None: return
             params   = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             q        = (params.get("q")        or [""])[0].strip()
             currency = (params.get("currency") or [""])[0].strip().upper() or None
@@ -240,9 +377,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
 
         # /api/price — live prices
-        # ?symbols=SAP.DE,SAP  → { "SAP.DE": {...}, "SAP": {...} }  (per-symbol, no currency)
-        # (no params)          → { "EUR": {...}, "USD": {...} }      (legacy)
         if path == "/api/price":
+            user = self._require_auth()
+            if user is None: return
             params  = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             symbols = (params.get("symbols") or [""])[0].strip()
             if symbols:
@@ -281,11 +418,67 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
 
+        # /api/register — create user (open if no users exist; else requires auth)
+        if path == "/api/register":
+            d = self.read_body()
+            username = str(d.get("username", "")).strip()
+            password = str(d.get("password", "")).strip()
+            if not username or not password:
+                self.json_response({"error": "username and password required"}, 400)
+                return
+            if users_exist():
+                # only authenticated users can create more accounts
+                user = self._require_auth()
+                if user is None: return
+            try:
+                new_user = register_user(username, password)
+                self.json_response(new_user, 201)
+            except ValueError as e:
+                self.json_response({"error": str(e)}, 400)
+            return
+
+        # /api/login — authenticate and set session cookie
+        if path == "/api/login":
+            d = self.read_body()
+            username = str(d.get("username", "")).strip()
+            password = str(d.get("password", "")).strip()
+            user = login_user(username, password)
+            if user is None:
+                self.json_response({"error": "invalid username or password"}, 401)
+                return
+            token = create_session(user["id"])
+            body  = json.dumps({"id": user["id"], "username": user["username"]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-cache")
+            self.cors_headers()
+            self._set_session_cookie(token)
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        # /api/logout — delete session
+        if path == "/api/logout":
+            token = self._session_token()
+            if token:
+                delete_session(token)
+            body = b"{}"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.cors_headers()
+            self._clear_session_cookie()
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         # /api/transactions — insert one
         if path == "/api/transactions":
+            user = self._require_auth()
+            if user is None: return
             d = self.read_body()
             try:
                 row = db_insert(
+                    user["id"],
                     str(d["symbol"]).strip(),
                     str(d["name"]).strip(),
                     float(d["quantity"]),
@@ -300,13 +493,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         # /api/transactions/import — replace all with bulk data
         if path == "/api/transactions/import":
+            user = self._require_auth()
+            if user is None: return
             d = self.read_body()
             rows = d.get("rows", [])
             if not rows:
                 self.json_response({"error": "no rows"}, 400)
                 return
-            db_clear()
-            db_bulk_insert(rows)
+            db_clear(user["id"])
+            db_bulk_insert(user["id"], rows)
             self.json_response({"imported": len(rows)}, 201)
             return
 
@@ -317,10 +512,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         m = re.match(r"^/api/transactions/(\d+)$", path)
         if m:
+            user = self._require_auth()
+            if user is None: return
             tx_id = int(m.group(1))
             d = self.read_body()
             try:
                 row = db_update(
+                    user["id"],
                     tx_id,
                     str(d["symbol"]).strip(),
                     str(d["name"]).strip(),
@@ -343,8 +541,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         m = re.match(r"^/api/transactions/(\d+)$", path)
         if m:
+            user = self._require_auth()
+            if user is None: return
             tx_id = int(m.group(1))
-            if db_delete(tx_id):
+            if db_delete(user["id"], tx_id):
                 self.json_response({"deleted": tx_id})
             else:
                 self.json_response({"error": "not found"}, 404)
