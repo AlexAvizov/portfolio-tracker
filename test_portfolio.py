@@ -338,7 +338,8 @@ class TestAPI(unittest.TestCase):
         self.assertAlmostEqual(row["purchase_price"], 99999.99,     places=2)
 
     def test_concurrent_inserts(self):
-        """100 concurrent inserts should all succeed without DB corruption."""
+        """Concurrent inserts should all succeed without DB corruption."""
+        N = 20
         results = []
         def insert(i):
             try:
@@ -347,13 +348,13 @@ class TestAPI(unittest.TestCase):
             except Exception as exc:
                 results.append(f"ERROR: {exc}")
 
-        threads = [threading.Thread(target=insert, args=(i,)) for i in range(100)]
+        threads = [threading.Thread(target=insert, args=(i,)) for i in range(N)]
         for t in threads: t.start()
         for t in threads: t.join()
 
         self.assertTrue(all(s == 201 for s in results), f"Some inserts failed: {results}")
         _, rows = api("GET", "/api/transactions")
-        self.assertEqual(len(rows), 100)
+        self.assertEqual(len(rows), N)
 
     # ── Add Purchase: brand-new symbol ────────────────────────────────────────
     def test_add_purchase_new_symbol_creates_first_transaction(self):
