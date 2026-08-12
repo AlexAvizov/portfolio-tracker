@@ -148,6 +148,7 @@ class TestAPI(unittest.TestCase):
         srv.DB_PATH = tempfile.mktemp(suffix=".db")
         srv.init_db()
         srv.http.server.ThreadingHTTPServer.allow_reuse_address = True
+        srv.http.server.ThreadingHTTPServer.request_queue_size = 128
         cls.server = srv.http.server.ThreadingHTTPServer(("127.0.0.1", srv.PORT), srv.Handler)
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
@@ -340,8 +341,11 @@ class TestAPI(unittest.TestCase):
         """100 concurrent inserts should all succeed without DB corruption."""
         results = []
         def insert(i):
-            s, r = api("POST", "/api/transactions", {**TX_FIXTURE, "symbol": f"S{i}"})
-            results.append(s)
+            try:
+                s, r = api("POST", "/api/transactions", {**TX_FIXTURE, "symbol": f"S{i}"})
+                results.append(s)
+            except Exception as exc:
+                results.append(f"ERROR: {exc}")
 
         threads = [threading.Thread(target=insert, args=(i,)) for i in range(100)]
         for t in threads: t.start()
