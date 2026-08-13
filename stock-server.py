@@ -396,6 +396,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.json_response({"EUR": eur, "USD": usd})
             return
 
+        # /api/forex — EUR/ILS and USD/ILS live exchange rates
+        if path == "/api/forex":
+            user = self._require_auth()
+            if user is None: return
+            eur = fetch_yahoo_quote("EURILS=X")
+            usd = fetch_yahoo_quote("USDILS=X")
+            result = {}
+            if eur: result["EUR"] = {"rate": round(eur["price"], 4), "source": eur["source"]}
+            if usd: result["USD"] = {"rate": round(usd["price"], 4), "source": usd["source"]}
+            self.json_response(result)
+            return
+
         # static files
         if path in ("/", ""):
             path = "/index.html"

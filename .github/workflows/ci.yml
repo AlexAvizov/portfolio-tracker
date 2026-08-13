@@ -58,10 +58,10 @@ jobs:
           echo "| Integration (API) | 22 |" >> $GITHUB_STEP_SUMMARY
           echo "| Business Logic | 16 |" >> $GITHUB_STEP_SUMMARY
           echo "| Ticker Search | 4 |" >> $GITHUB_STEP_SUMMARY
-          echo "| Ticker API | 6 |" >> $GITHUB_STEP_SUMMARY
+          echo "| Ticker API | 9 |" >> $GITHUB_STEP_SUMMARY
           echo "| Auth | 13 |" >> $GITHUB_STEP_SUMMARY
           echo "| Edge / Regression | 5 |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Total** | **78** |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Total** | **81** |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Server code coverage: ${TOTAL}%**" >> $GITHUB_STEP_SUMMARY
 

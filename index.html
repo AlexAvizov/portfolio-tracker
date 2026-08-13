@@ -40,16 +40,6 @@
   }
   .header-left { display: flex; align-items: center; gap: 14px; }
   .logo { font-size: 22px; font-weight: 700; background: linear-gradient(90deg, var(--accent), var(--accent2)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-  .price-badge {
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 6px 14px;
-    display: flex; align-items: center; gap: 8px;
-    font-size: 13px;
-  }
-  .price-badge .ticker { color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
-  .price-badge .price-val { font-weight: 700; font-size: 17px; color: var(--accent); }
   .price-badge .chg { font-size: 12px; }
   .up { color: var(--green); }
   .dn { color: var(--red); }
@@ -265,6 +255,13 @@
     border-radius: 6px; padding: 3px 10px;
     font-size: 12px; font-weight: 600; color: var(--text-muted);
   }
+  .fx-rate-chip {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 6px; padding: 3px 10px;
+    font-size: 12px; white-space: nowrap;
+  }
+  .fx-rate-chip .fx-label { color: var(--text-muted); }
+  .fx-rate-chip .fx-value { font-weight: 700; color: var(--accent); }
 
   .detail-panel {
     display: none;
@@ -394,11 +391,6 @@
 <header>
   <div class="header-left">
     <div class="logo">📈 Portfolio Tracker</div>
-    <div id="sapPriceBadge" class="price-badge" style="display:none">
-      <span class="ticker">SAP</span>
-      <span class="price-val" id="sapPrice"></span>
-      <span class="chg" id="sapChg"></span>
-    </div>
   </div>
   <div class="header-right">
     <span class="price-status" id="priceStatus">Fetching live price…</span>
@@ -556,6 +548,7 @@ const DEFAULT_ROWS = [
 // currency defaults to 'EUR' for existing data
 let rawRows = DEFAULT_ROWS.map(r => [...r, r[5] ?? 'EUR']);
 let prices    = {};  // { internalSymbol: {price, prev, chg, chgPct, currency, yfTicker, source} }
+let fxRates   = {};  // { EUR: 3.9514, USD: 3.6230 } — ILS exchange rates
 let tickerMap = {};  // { internalSymbol: "SAP.DE" } — loaded from localStorage
 let activeSymbol = null;
 let sortCol = null, sortDir = 1;
@@ -684,6 +677,25 @@ async function fetchAllPrices() {
   }
 }
 
+async function fetchForexRates() {
+  try {
+    const r = await fetch('http://localhost:8765/api/forex', { signal: AbortSignal.timeout(5000) });
+    if (r.ok) {
+      const d = await r.json();
+      if (d.EUR?.rate) fxRates.EUR = d.EUR.rate;
+      if (d.USD?.rate) fxRates.USD = d.USD.rate;
+      return;
+    }
+  } catch(e) {}
+  // Direct Yahoo Finance fallback
+  const [eur, usd] = await Promise.allSettled([
+    fetchYahooQuote('EURILS=X'),
+    fetchYahooQuote('USDILS=X'),
+  ]);
+  if (eur.value?.price) fxRates.EUR = eur.value.price;
+  if (usd.value?.price) fxRates.USD = usd.value.price;
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const fmt = (n, dec=2) => n == null ? '—' : Number(n).toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
 const fmtDate = d => d ? new Date(d).toLocaleDateString('en-GB', {day:'2-digit',month:'short',year:'numeric'}) : '—';
@@ -763,10 +775,13 @@ function summaryHtml(holdings, ccy) {
   const totalGain     = hasValue ? holdings.reduce((s, h) => s + (h.gainLoss  ?? 0), 0) : null;
   const totalPct      = totalInvested > 0 && totalGain != null ? (totalGain / totalInvested) * 100 : null;
   const totalShares   = holdings.reduce((s, h) => s + h.totalQty, 0);
+  const ilsTotal      = (ccy === 'EUR' || ccy === 'USD') && fxRates[ccy] && totalValue != null
+    ? totalValue * fxRates[ccy] : null;
 
   const cards = [
     { label: 'Total Invested',   value: `${sym} ${fmt(totalInvested)}`, cls: '' },
     { label: 'Current Value',    value: totalValue != null ? `${sym} ${fmt(totalValue)}` : '—', cls: '' },
+    ...(ilsTotal != null ? [{ label: 'Value in ₪', value: `₪ ${fmt(ilsTotal)}`, cls: '' }] : []),
     { label: 'Total Gain / Loss',value: totalGain  != null ? `${sym} ${fmt(totalGain)}`  : '—', cls: totalGain > 0 ? 'up' : totalGain < 0 ? 'dn' : '' },
     { label: 'Overall Return',   value: totalPct   != null ? `${totalPct >= 0 ? '+' : ''}${fmt(totalPct)}%` : '—', cls: totalPct > 0 ? 'up' : totalPct < 0 ? 'dn' : '' },
     { label: 'Total Shares',     value: fmt(totalShares, 4), cls: '' },
@@ -836,11 +851,18 @@ function renderAll() {
   const root = document.getElementById('sectionsRoot');
   root.innerHTML = SECTIONS.map(sec => {
     const holdings = buildHoldings(rawRows, sec.id);
+    const hasValue   = holdings.some(h => h.totalValue != null);
+    const totalValue = hasValue ? holdings.reduce((s, h) => s + (h.totalValue ?? 0), 0) : null;
+    const ilsTotal   = totalValue != null && fxRates[sec.id] ? totalValue * fxRates[sec.id] : null;
+    const fxChip = (sec.id === 'EUR' || sec.id === 'USD') && fxRates[sec.id]
+      ? `<span class="fx-rate-chip"><span class="fx-label">1 ${sec.id} =</span> <span class="fx-value">${fmt(fxRates[sec.id], 2)} ₪</span></span>`
+      : '';
     return `<section class="currency-section" id="section-${sec.id}">
       <div class="currency-section-header">
         <span class="currency-flag">${sec.flag}</span>
         <span class="currency-name">${sec.label}</span>
         <span class="currency-symbol">${sec.id} ${sec.symbol}</span>
+        ${fxChip}
       </div>
       ${summaryHtml(holdings, sec.id)}
       <div class="section-title">Holdings <span class="badge">${holdings.length}</span></div>
@@ -1143,6 +1165,7 @@ async function persistAndRefresh() {
   } else {
     localStorage.setItem('stockPortfolioData', JSON.stringify(rawRows));
   }
+  await fetchForexRates();
   renderAll();
   if (activeSymbol) {
     const activeRow = document.querySelector('tr.active-row');
@@ -1385,24 +1408,11 @@ async function init() {
   await loadData();
   renderAll();
 
-  // Resolve Yahoo tickers for all holdings, then fetch prices
+  // Resolve Yahoo tickers for all holdings, then fetch prices and forex rates
   await resolveAllTickers();
   await fetchAllPrices();
+  await fetchForexRates();
   renderAll();
-
-  // Header badge — show price for first resolved holding
-  const firstSym = Object.keys(prices)[0];
-  const p = firstSym ? priceData(firstSym) : null;
-  if (p) {
-    const s = ccySym[p.currency] ?? p.currency;
-    document.getElementById('sapPrice').textContent = `${p.yfTicker ?? firstSym}  ${s} ${fmt(p.price)}`;
-    if (p.chg != null) {
-      const sign = p.chg >= 0 ? '+' : '';
-      const cls  = p.chg >= 0 ? 'up' : 'dn';
-      document.getElementById('sapChg').innerHTML = `<span class="${cls}">${sign}${fmt(p.chg)} (${sign}${fmt(p.chgPct)}%)</span>`;
-    }
-    document.getElementById('sapPriceBadge').style.display = '';
-  }
 
   const tickerCount = Object.keys(prices).length;
   const src = useAPI ? ' · DB' : ' · offline';

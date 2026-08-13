@@ -750,6 +750,35 @@ class TestTickerAPI(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertLessEqual(len(body), 20)
 
+    # ── /api/forex ────────────────────────────────────────────────────────────
+    def test_forex_returns_eur_and_usd_rates(self):
+        self._seed_price("EURILS=X", price=3.9514, prev=3.94)
+        self._seed_price("USDILS=X", price=3.6230, prev=3.61)
+        status, body = self._api("/api/forex")
+        self.assertEqual(status, 200)
+        self.assertIn("EUR", body)
+        self.assertIn("USD", body)
+        self.assertAlmostEqual(body["EUR"]["rate"], 3.9514)
+        self.assertAlmostEqual(body["USD"]["rate"], 3.6230)
+
+    def test_forex_requires_auth(self):
+        url = f"http://127.0.0.1:{TICKER_PORT}/api/forex"
+        req = urllib.request.Request(url)  # no cookie
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                status = r.status
+        except urllib.error.HTTPError as e:
+            status = e.code
+        self.assertEqual(status, 401)
+
+    def test_forex_returns_partial_when_one_fetch_fails(self):
+        # Only seed USD — EUR fetch returns nothing
+        self._seed_price("USDILS=X", price=3.6230, prev=3.61)
+        status, body = self._api("/api/forex")
+        self.assertEqual(status, 200)
+        self.assertNotIn("EUR", body)
+        self.assertIn("USD", body)
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # 6. Authentication tests

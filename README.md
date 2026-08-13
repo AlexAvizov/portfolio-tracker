@@ -6,6 +6,7 @@ A personal stock portfolio tracker built as a single-page web app with an option
 
 - **Three currency sections** — EUR, USD, and ILS, each with its own summary and holdings table
 - **Live market prices** — per-symbol prices fetched from Yahoo Finance, with automatic ticker resolution
+- **Live FX rates** — EUR/ILS and USD/ILS exchange rates displayed next to each section header, sourced from Yahoo Finance
 - **Per-holding summary** — Total Invested, Current Value, Total Gain/Loss, Overall Return %, Total Shares
 - **Transaction drill-down** — click any holding row to expand all individual purchase lots inline
 - **Full CRUD** — add, edit, and delete holdings and individual transactions via modal forms
