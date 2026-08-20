@@ -228,6 +228,11 @@ def fetch_yahoo_quote(yf_symbol, currency=None):
         meta  = data["chart"]["result"][0]["meta"]
         price = float(meta.get("regularMarketPrice") or 0)
         prev  = float(meta.get("chartPreviousClose") or 0)
+        # TASE prices are quoted in agorot (ILA = 1/100 ILS) — normalise to ILS
+        if meta.get("currency") == "ILA":
+            price /= 100
+            prev  /= 100
+            currency = "ILS"
         if price:
             chg     = price - prev if prev else None
             chg_pct = ((price - prev) / prev * 100) if prev else None
@@ -248,9 +253,24 @@ def _clean_stock_name(name):
     name = re.sub(r'\s+\b(AG|SE|SA|NV|PLC|LTD|LLC|INC|CORP|GmbH|KGaA)\b\.?\s*$', '', name, flags=re.I)
     return name.strip()
 
-def fetch_yahoo_search(query, currency=None):
+def _tase_isin(security_id):
+    """Convert a numeric TASE security ID to its full Israeli ISIN (e.g. '1150283' → 'IL0011502833')."""
+    padded = security_id.zfill(9)
+    base   = "IL" + padded
+    # ISIN Luhn check digit
+    s = "".join(str(ord(c) - 55) if c.isalpha() else c for c in base)
+    total = 0
+    for i, d in enumerate(reversed(s)):
+        n = int(d)
+        if i % 2 == 0:
+            n *= 2
+            if n > 9: n -= 9
+        total += n
+    return base + str((10 - total % 10) % 10)
+
+def fetch_yahoo_search(query, currency=None, sym=None):
     query = _clean_stock_name(query)
-    key = f"{query.lower().strip()}|{currency or ''}"
+    key = f"{query.lower().strip()}|{currency or ''}|{sym or ''}"
     with _price_lock:
         cached = _ticker_cache.get(key)
         if cached and time.time() - cached["ts"] < TICKER_CACHE_TTL:
@@ -258,6 +278,45 @@ def fetch_yahoo_search(query, currency=None):
 
     EUR_EXCHANGES = {"GER", "FRA", "VIE", "MIL", "AMS", "PAR", "MCE", "BRU", "LIS", "HEL"}
     USD_EXCHANGES = {"NYQ", "NAS", "PCX", "ASE"}
+    ILS_EXCHANGES = {"TLV", "TAV"}
+
+    # For ILS: try symbol-based .TA construction before name search.
+    if currency == "ILS" and sym:
+        s = sym.strip()
+        # Pattern A — TASE fund format: "TCH.F1" → "TCH-F1.TA"
+        ta_sym = re.sub(r'\.([A-Za-z])(\d+)$', r'-\1\2.TA', s.upper())
+        if ta_sym.endswith('.TA') and ta_sym != s.upper() + '.TA':
+            with _price_lock:
+                _ticker_cache[key] = {"data": ta_sym, "ts": time.time()}
+            return ta_sym
+        # Pattern B — symbol is already an ISIN (e.g. "IL0011502833") — search Yahoo directly
+        isin_candidate = s.upper()
+        if re.match(r'^IL\d{10}$', isin_candidate):
+            isin = isin_candidate
+        # Pattern C — numeric TASE security ID: build ISIN and search Yahoo
+        elif s.isdigit():
+            isin = _tase_isin(s)
+        else:
+            isin = None
+        if isin:
+            try:
+                q   = urllib.parse.quote(isin)
+                url = f"https://query1.finance.yahoo.com/v1/finance/search?q={q}&quotesCount=5&newsCount=0"
+                req = urllib.request.Request(url, headers=YAHOO_HEADERS)
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    raw = resp.read()
+                    if resp.info().get("Content-Encoding") == "gzip":
+                        raw = gzip.decompress(raw)
+                    data = json.loads(raw)
+                quotes = [q for q in data.get("quotes", []) if q.get("symbol")]
+                ticker = next((q["symbol"] for q in quotes if q.get("exchange") in ILS_EXCHANGES), None)
+                if ticker:
+                    print(f"  [search] {s!r} → ISIN {isin} → {ticker}")
+                    with _price_lock:
+                        _ticker_cache[key] = {"data": ticker, "ts": time.time()}
+                    return ticker
+            except Exception as e:
+                print(f"  [search] ISIN lookup {isin!r} failed: {e}")
 
     try:
         q   = urllib.parse.quote(query)
@@ -275,6 +334,8 @@ def fetch_yahoo_search(query, currency=None):
                 ticker = next((q["symbol"] for q in quotes if q.get("exchange") in EUR_EXCHANGES), None)
             elif currency == "USD":
                 ticker = next((q["symbol"] for q in quotes if q.get("exchange") in USD_EXCHANGES), None)
+            elif currency == "ILS":
+                ticker = next((q["symbol"] for q in quotes if q.get("exchange") in ILS_EXCHANGES), None)
             if not ticker:
                 ticker = quotes[0]["symbol"]
         with _price_lock:
@@ -362,17 +423,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.json_response(db_get_all(user["id"]))
             return
 
-        # /api/ticker-search?q=<name>&currency=EUR
+        # /api/ticker-search?q=<name>&currency=EUR&sym=<internalSymbol>
         if path == "/api/ticker-search":
             user = self._require_auth()
             if user is None: return
             params   = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             q        = (params.get("q")        or [""])[0].strip()
             currency = (params.get("currency") or [""])[0].strip().upper() or None
+            sym      = (params.get("sym")      or [""])[0].strip() or None
             if not q:
                 self.json_response({"error": "q param required"}, 400)
                 return
-            ticker = fetch_yahoo_search(q, currency)
+            ticker = fetch_yahoo_search(q, currency, sym=sym)
             self.json_response({"ticker": ticker})
             return
 

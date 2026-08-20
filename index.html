@@ -574,11 +574,11 @@ function saveTickerMap() {
   localStorage.setItem(TICKER_MAP_KEY, JSON.stringify(tickerMap));
 }
 
-async function searchTicker(name, currency) {
+async function searchTicker(sym, name, currency) {
   // Server proxy first (avoids CORS, uses currency hint for exchange preference)
   try {
     const r = await fetch(
-      `http://localhost:8765/api/ticker-search?q=${encodeURIComponent(name)}&currency=${currency}`,
+      `http://localhost:8765/api/ticker-search?q=${encodeURIComponent(name)}&currency=${currency}&sym=${encodeURIComponent(sym)}`,
       { signal: AbortSignal.timeout(5000) });
     if (r.ok) {
       const d = await r.json();
@@ -607,7 +607,7 @@ async function resolveAllTickers() {
   let changed = false;
   for (const [sym, { name, ccy }] of seen) {
     if (tickerMap[sym] && !tickerMap[sym].needsRefresh) continue;
-    const ticker = await searchTicker(name, ccy);
+    const ticker = await searchTicker(sym, name, ccy);
     if (ticker) {
       tickerMap[sym] = { ticker, name, resolvedAt: Date.now() };
       changed = true;

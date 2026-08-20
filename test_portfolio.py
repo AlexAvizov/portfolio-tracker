@@ -707,7 +707,7 @@ class TestTickerAPI(unittest.TestCase):
 
     def test_ticker_search_returns_ticker(self):
         with srv._price_lock:
-            srv._ticker_cache["sap|EUR"] = {"data": "SAP.DE", "ts": time.time()}
+            srv._ticker_cache["sap|EUR|"] = {"data": "SAP.DE", "ts": time.time()}
         status, body = self._api("/api/ticker-search?q=SAP+AG&currency=EUR")
         self.assertEqual(status, 200)
         self.assertEqual(body["ticker"], "SAP.DE")
